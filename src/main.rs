@@ -152,8 +152,8 @@ struct RendererInner<B: hal::Backend> {
     pipeline_layout: B::PipelineLayout,
     desc_pool: B::DescriptorPool,
     surface: B::Surface,
-    submission_complete_semaphore: B::Semaphore,
-    submission_complete_fence: B::Fence,
+    semaphore: B::Semaphore,
+    fence: B::Fence, // render invariant: unsignaled (can WAIT and RESET)
     cmd_pool: B::CommandPool,
     cmd_buffer: B::CommandBuffer,
     set_layout: B::DescriptorSetLayout,
@@ -264,19 +264,21 @@ where
         .expect("Can't create descriptor pool");
         let desc_set = unsafe { desc_pool.allocate_set(&set_layout) }.unwrap();
 
-        // Buffer allocations
+        ///////////////////////////////////////////////////////
+        // ALLOCATE AND INIT VERTEX BUFFER
         println!("Memory types: {:#?}", memory_types);
-        let non_coherent_alignment = limits.non_coherent_atom_size as u64;
+        let non_coherent_alignment = limits.non_coherent_atom_size;
 
-        let buffer_stride = mem::size_of::<Vertex>() as u64;
-        let buffer_len = QUAD.len() as u64 * buffer_stride;
-        assert_ne!(buffer_len, 0);
-        let padded_buffer_len = ((buffer_len + non_coherent_alignment - 1)
+        const QUAD_BUF_STRIDE: usize = mem::size_of::<Vertex>();
+        const QUAD_BUF_BYTES: usize = QUAD.len() * QUAD_BUF_STRIDE;
+        assert_ne!(QUAD_BUF_BYTES, 0);
+        let padded_buffer_len = ((QUAD_BUF_BYTES + non_coherent_alignment - 1)
             / non_coherent_alignment)
             * non_coherent_alignment;
 
         let mut vertex_buffer =
-            unsafe { device.create_buffer(padded_buffer_len, hal::buffer::Usage::VERTEX) }.unwrap();
+            unsafe { device.create_buffer(padded_buffer_len as u64, hal::buffer::Usage::VERTEX) }
+                .unwrap();
 
         let buffer_req = unsafe { device.get_buffer_requirements(&vertex_buffer) };
 
@@ -292,8 +294,6 @@ where
             })
             .unwrap()
             .into();
-
-        // TODO: check transitions: read/write mapping and vertex buffer read
         let buffer_memory = unsafe {
             let memory = device
                 .allocate_memory(upload_type, buffer_req.size)
@@ -302,7 +302,7 @@ where
                 .bind_buffer_memory(&memory, 0, &mut vertex_buffer)
                 .unwrap();
             let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
-            ptr::copy_nonoverlapping(QUAD.as_ptr() as *const u8, mapping, buffer_len as usize);
+            ptr::copy_nonoverlapping(QUAD.as_ptr() as *const u8, mapping, QUAD_BUF_BYTES);
             device
                 .flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL)))
                 .unwrap();
@@ -310,7 +310,8 @@ where
             memory
         };
 
-        // Image
+        ///////////////////////////////////////////
+        // LOAD, ALLOCATE & INIT IMAGE TEX
         let img = image::io::Reader::open("./src/data/logo.png")
             .unwrap()
             .decode()
@@ -327,14 +328,15 @@ where
         let row_alignment_mask = limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
         let image_stride = 4usize;
         let row_pitch = (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
-        let upload_size = (height * row_pitch) as u64;
+        let upload_size = (height * row_pitch) as usize;
         let padded_upload_size = ((upload_size + non_coherent_alignment - 1)
             / non_coherent_alignment)
             * non_coherent_alignment;
 
-        let mut image_upload_buffer =
-            unsafe { device.create_buffer(padded_upload_size, hal::buffer::Usage::TRANSFER_SRC) }
-                .unwrap();
+        let mut image_upload_buffer = unsafe {
+            device.create_buffer(padded_upload_size as u64, hal::buffer::Usage::TRANSFER_SRC)
+        }
+        .unwrap();
         let image_mem_reqs = unsafe { device.get_buffer_requirements(&image_upload_buffer) };
 
         // copy image data into staging buffer
@@ -361,7 +363,6 @@ where
             device.unmap_memory(&memory);
             memory
         };
-
         let mut image_logo = unsafe {
             device.create_image(
                 kind,
@@ -426,8 +427,9 @@ where
             )
         }
         .expect("Can't create command pool");
-        let mut copy_fence = device.create_fence(false).expect("Could not create fence");
+        let mut fence = device.create_fence(false).expect("Could not create fence");
         unsafe {
+            //
             let mut cmd_buffer = cmd_pool.allocate_one(command::Level::Primary);
             cmd_buffer.begin_primary(command::CommandBufferFlags::ONE_TIME_SUBMIT);
 
@@ -485,19 +487,11 @@ where
                 m::Dependencies::empty(),
                 &[image_barrier],
             );
-
             cmd_buffer.finish();
-
-            queue_group.queues[0]
-                .submit_without_semaphores(Some(&cmd_buffer), Some(&mut copy_fence));
-
+            queue_group.queues[0].submit_without_semaphores(Some(&cmd_buffer), Some(&mut fence));
             device
-                .wait_for_fence(&copy_fence, !0)
+                .wait_for_fence(&fence, !0)
                 .expect("Can't wait for fence");
-        }
-
-        unsafe {
-            device.destroy_fence(copy_fence);
         }
 
         let caps = surface.capabilities(&adapter.physical_device);
@@ -543,10 +537,9 @@ where
                 .expect("Can't create render pass")
         };
 
-        let submission_complete_semaphore = device
+        let semaphore = device
             .create_semaphore()
             .expect("Could not create semaphore");
-        let submission_complete_fence = device.create_fence(true).expect("Could not create fence");
         let cmd_buffer = unsafe { cmd_pool.allocate_one(command::Level::Primary) };
 
         let pipeline_layout =
@@ -682,8 +675,8 @@ where
                 image_memory,
                 image_upload_memory,
                 sampler,
-                submission_complete_semaphore,
-                submission_complete_fence,
+                semaphore,
+                fence,
                 cmd_pool,
                 cmd_buffer,
             }),
@@ -736,18 +729,12 @@ where
                 .unwrap()
         };
 
-        // Wait for the fence of the previous submission of this frame and reset it; ensures we are
-        // submitting only up to maximum number of frames_in_flight if we are submitting faster than
-        // the gpu can keep up with. This would also guarantee that any resources which need to be
-        // updated with a CPU->GPU data copy are not in use by the GPU, so we can perform those updates.
-        // In this case there are none to be done, however.
         unsafe {
-            let fence = &inner.submission_complete_fence;
             self.device
-                .wait_for_fence(fence, !0)
+                .wait_for_fence(&inner.fence, !0)
                 .expect("Failed to wait for fence");
             self.device
-                .reset_fence(fence)
+                .reset_fence(&inner.fence)
                 .expect("Failed to reset fence");
             inner.cmd_pool.reset(false);
         }
@@ -790,15 +777,15 @@ where
             let submission = Submission {
                 command_buffers: iter::once(&inner.cmd_buffer),
                 wait_semaphores: None,
-                signal_semaphores: iter::once(&inner.submission_complete_semaphore),
+                signal_semaphores: iter::once(&inner.semaphore),
             };
-            self.queue_group.queues[0].submit(submission, Some(&inner.submission_complete_fence));
+            self.queue_group.queues[0].submit(submission, Some(&inner.fence));
 
             // present frame
             let result = self.queue_group.queues[0].present(
                 &mut inner.surface,
                 surface_image,
-                Some(&inner.submission_complete_semaphore),
+                Some(&inner.semaphore), // waits for
             );
 
             self.device.destroy_framebuffer(framebuffer);
@@ -827,11 +814,8 @@ where
             self.device.destroy_image_view(inner.image_srv);
             self.device.destroy_sampler(inner.sampler);
             self.device.destroy_command_pool(inner.cmd_pool);
-            self.device
-                .destroy_semaphore(inner.submission_complete_semaphore);
-
-            self.device.destroy_fence(inner.submission_complete_fence);
-
+            self.device.destroy_semaphore(inner.semaphore);
+            self.device.destroy_fence(inner.fence);
             self.device.destroy_render_pass(inner.render_pass);
             inner.surface.unconfigure_swapchain(&self.device);
             self.device.free_memory(inner.buffer_memory);
