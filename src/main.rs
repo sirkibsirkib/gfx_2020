@@ -1,14 +1,11 @@
 use gfx_backend_vulkan as back;
-use gfx_hal as hal;
-use hal::{
-    buffer, command, format as f,
-    format::{AsFormat, ChannelType, Rgba8Srgb as ColorFormat, Swizzle},
-    image as i, memory as m, pass,
-    pass::Subpass,
-    pool,
+use gfx_hal::{
+    self as hal, command,
+    format::{self as f, AsFormat, ChannelType, Rgba8Srgb as ColorFormat, Swizzle},
+    image as i, memory as m,
+    pass::{self, Subpass},
     prelude::*,
-    pso,
-    pso::{PipelineStage, ShaderStageFlags, VertexInputRate},
+    pso::{self, PipelineStage, ShaderStageFlags, VertexInputRate},
     queue::{QueueGroup, Submission},
     window,
 };
@@ -279,7 +276,7 @@ where
             * non_coherent_alignment;
 
         let mut vertex_buffer =
-            unsafe { device.create_buffer(padded_buffer_len, buffer::Usage::VERTEX) }.unwrap();
+            unsafe { device.create_buffer(padded_buffer_len, hal::buffer::Usage::VERTEX) }.unwrap();
 
         let buffer_req = unsafe { device.get_buffer_requirements(&vertex_buffer) };
 
@@ -314,10 +311,17 @@ where
         };
 
         // Image
-        let img_data = include_bytes!("data/logo.png");
-        let img = image::load(Cursor::new(&img_data[..]), image::ImageFormat::Png)
+        let img = image::io::Reader::open("./src/data/logo.png")
+            .unwrap()
+            .decode()
             .unwrap()
             .to_rgba();
+        // let img = image::load(
+        //     Cursor::new(include_bytes!("data/logo.png")),
+        //     image::ImageFormat::Png,
+        // )
+        // .unwrap()
+        // .to_rgba();
         let (width, height) = img.dimensions();
         let kind = i::Kind::D2(width as i::Size, height as i::Size, 1, 1);
         let row_alignment_mask = limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
@@ -329,7 +333,7 @@ where
             * non_coherent_alignment;
 
         let mut image_upload_buffer =
-            unsafe { device.create_buffer(padded_upload_size, buffer::Usage::TRANSFER_SRC) }
+            unsafe { device.create_buffer(padded_upload_size, hal::buffer::Usage::TRANSFER_SRC) }
                 .unwrap();
         let image_mem_reqs = unsafe { device.get_buffer_requirements(&image_upload_buffer) };
 
@@ -416,7 +420,10 @@ where
 
         // copy buffer to texture
         let mut cmd_pool = unsafe {
-            device.create_command_pool(queue_group.family, pool::CommandPoolCreateFlags::empty())
+            device.create_command_pool(
+                queue_group.family,
+                hal::pool::CommandPoolCreateFlags::empty(),
+            )
         }
         .expect("Can't create command pool");
         let mut copy_fence = device.create_fence(false).expect("Could not create fence");
@@ -746,41 +753,42 @@ where
         }
 
         // Rendering
-        let cmd_buffer = &mut inner.cmd_buffer;
         unsafe {
-            cmd_buffer.begin_primary(command::CommandBufferFlags::ONE_TIME_SUBMIT);
+            inner
+                .cmd_buffer
+                .begin_primary(command::CommandBufferFlags::ONE_TIME_SUBMIT);
 
-            cmd_buffer.set_viewports(0, &[self.viewport.clone()]); // normalized device -> screen coords
-            cmd_buffer.set_scissors(0, &[self.viewport.rect]); // TODO mess with this and see if it crops
-            cmd_buffer.bind_graphics_pipeline(&inner.pipeline);
-            cmd_buffer.bind_vertex_buffers(
+            inner.cmd_buffer.set_viewports(0, &[self.viewport.clone()]); // normalized device -> screen coords
+            inner.cmd_buffer.set_scissors(0, &[self.viewport.rect]); // TODO mess with this and see if it crops
+            inner.cmd_buffer.bind_graphics_pipeline(&inner.pipeline);
+            inner.cmd_buffer.bind_vertex_buffers(
                 0,
-                iter::once((&inner.vertex_buffer, buffer::SubRange::WHOLE)),
+                iter::once((&inner.vertex_buffer, hal::buffer::SubRange::WHOLE)),
             );
-            cmd_buffer.bind_graphics_descriptor_sets(
+            inner.cmd_buffer.bind_graphics_descriptor_sets(
                 &inner.pipeline_layout,
                 0,
                 iter::once(&self.desc_set),
                 &[],
             );
 
-            cmd_buffer.begin_render_pass(
+            inner.cmd_buffer.begin_render_pass(
                 &inner.render_pass,
                 &framebuffer,
                 self.viewport.rect,
                 &[command::ClearValue {
                     color: command::ClearColor {
-                        float32: [0.8, 0.8, 0.8, 1.0],
+                        float32: [0.2, 0.8, 0.8, 1.0],
                     },
                 }],
                 command::SubpassContents::Inline,
             );
-            cmd_buffer.draw(0..6, 0..1);
-            cmd_buffer.end_render_pass();
-            cmd_buffer.finish();
+            inner.cmd_buffer.draw(0..6, 0..1);
+            inner.cmd_buffer.end_render_pass();
+            inner.cmd_buffer.finish();
 
             let submission = Submission {
-                command_buffers: iter::once(&*cmd_buffer),
+                command_buffers: iter::once(&inner.cmd_buffer),
                 wait_semaphores: None,
                 signal_semaphores: iter::once(&inner.submission_complete_semaphore),
             };
