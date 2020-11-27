@@ -18,6 +18,43 @@ use std::{
     ptr,
 };
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct TransMat4([[f32; 4]; 4]);
+impl TransMat4 {
+    const BYTES: usize = std::mem::size_of::<Self>();
+    fn scaling([sx, sy, sz]: [f32; 3]) -> Self {
+        Self([
+            //
+            [sx, 0., 0., 0.],
+            [0., sy, 0., 0.],
+            [0., 0., sz, 0.],
+            [0., 0., 0., 1.],
+        ])
+    }
+    fn translation([tx, ty, tz]: [f32; 3]) -> Self {
+        Self([
+            //
+            [1., 0., 0., tx],
+            [0., 1., 0., ty],
+            [0., 0., 1., tz],
+            [0., 0., 0., 1.],
+        ])
+    }
+    fn rotation_z(angle: f32) -> Self {
+        Self([
+            [angle.cos(), -angle.sin(), 0., 0.],
+            [angle.sin(), angle.cos(), 0., 0.],
+            [0., 0., 1., 0.],
+            [0., 0., 0., 1.],
+        ])
+    }
+    fn as_u32_slice(&self) -> &[u32] {
+        let x: &[u32; Self::BYTES / 4] = unsafe { std::mem::transmute(self) };
+        x
+    }
+}
+
 mod want;
 
 const DIMS: window::Extent2D = window::Extent2D { width: 1024, height: 768 };
@@ -28,6 +65,7 @@ const ENTRY_NAME: &str = "main";
 #[derive(Debug, Clone, Copy)]
 #[allow(non_snake_case)]
 struct Vertex {
+    // 4*2*2-16 bytes
     a_Pos: [f32; 2], // on screen
     a_Uv: [f32; 2],  // in texture
 }
@@ -36,12 +74,13 @@ struct Vertex {
 #[derive(Debug, Clone, Copy)]
 #[allow(non_snake_case)]
 struct InstanceData {
-    trans: [[f32; 4]; 4],
-    tex_scissor: Rect,
+    // 4*4*4+4*4=80 bytes
+    trans: TransMat4,
+    // tex_scissor: Rect,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct Rect {
     x: f32,
     y: f32,
@@ -107,6 +146,7 @@ fn main() {
     // It is important that the closure move captures the Renderer,
     // otherwise it will not be dropped when the event loop exits.
     event_loop.run(move |event, _, control_flow| {
+        println!("{:?}", event);
         *control_flow = winit::event_loop::ControlFlow::Wait;
 
         match event {
@@ -149,6 +189,7 @@ struct Renderer<B: hal::Backend> {
     viewport: pso::Viewport,
     desc_set: B::DescriptorSet,
     inner: ManuallyDrop<RendererInner<B>>,
+    frame: usize,
 }
 
 /// Things that must be manually dropped, because they correspond to Gfx resources
@@ -167,10 +208,12 @@ struct RendererInner<B: hal::Backend> {
     cmd_buffer: B::CommandBuffer,
     set_layout: B::DescriptorSetLayout,
     vertex_buffer: B::Buffer,
+    // instance_buffer: B::Buffer,
     image_upload_buffer: B::Buffer,
     image_logo: B::Image,
     image_view: B::ImageView,
-    buffer_memory: B::Memory,
+    vertex_buffer_memory: B::Memory,
+    // instance_buffer_memory: B::Memory,
     image_memory: B::Memory,
     image_upload_memory: B::Memory,
     sampler: B::Sampler,
@@ -266,46 +309,6 @@ where
         }
         .expect("Can't create descriptor pool");
         let desc_set = unsafe { desc_pool.allocate_set(&set_layout) }.unwrap();
-
-        ///////////////////////////////////////////////////////
-        // ALLOCATE AND INIT VERTEX BUFFER
-        println!("Memory types: {:#?}", memory_types);
-
-        const QUAD_BUF_STRIDE: usize = mem::size_of::<Vertex>();
-        const QUAD_BUF_BYTES: usize = QUAD.len() * QUAD_BUF_STRIDE;
-        assert_ne!(QUAD_BUF_BYTES, 0);
-
-        let mut vertex_buffer = unsafe {
-            device.create_buffer(
-                padded_len(QUAD_BUF_BYTES, limits.non_coherent_atom_size) as u64,
-                hal::buffer::Usage::VERTEX,
-            )
-        }
-        .unwrap();
-
-        let buffer_req = unsafe { device.get_buffer_requirements(&vertex_buffer) };
-
-        let upload_type = memory_types
-            .iter()
-            .enumerate()
-            .position(|(id, mem_type)| {
-                // type_mask is a bit field where each bit represents a memory type. If the bit is set
-                // to 1 it means we can use that type for our buffer. So this code finds the first
-                // memory type that has a `1` (or, is allowed), and is visible to the CPU.
-                buffer_req.type_mask & (1 << id) != 0
-                    && mem_type.properties.contains(m::Properties::CPU_VISIBLE)
-            })
-            .unwrap()
-            .into();
-        let buffer_memory = unsafe {
-            let memory = device.allocate_memory(upload_type, buffer_req.size).unwrap();
-            device.bind_buffer_memory(&memory, 0, &mut vertex_buffer).unwrap();
-            let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
-            ptr::copy_nonoverlapping(QUAD.as_ptr() as *const u8, mapping, QUAD_BUF_BYTES);
-            device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
-            device.unmap_memory(&memory);
-            memory
-        };
         let sampler = unsafe {
             device.create_sampler(&i::SamplerDesc::new(i::Filter::Nearest, i::WrapMode::Clamp))
         }
@@ -316,6 +319,81 @@ where
         }
         .expect("Can't create command pool");
         let mut fence = device.create_fence(false).expect("Could not create fence");
+
+        ///////////////////////////////////////////////////////
+        // ALLOCATE AND INIT VERTEX BUFFER
+        println!("Memory types: {:#?}", memory_types);
+
+        const QUAD_BUF_STRIDE: usize = mem::size_of::<Vertex>();
+        const QUAD_BUF_BYTES: usize = QUAD.len() * QUAD_BUF_STRIDE;
+        assert_ne!(QUAD_BUF_BYTES, 0);
+        let mut vertex_buffer = unsafe {
+            device.create_buffer(
+                padded_len(QUAD_BUF_BYTES, limits.non_coherent_atom_size) as u64,
+                hal::buffer::Usage::VERTEX,
+            )
+        }
+        .unwrap();
+
+        let vertex_buffer_req = unsafe { device.get_buffer_requirements(&vertex_buffer) };
+        let upload_type = memory_types
+            .iter()
+            .enumerate()
+            .position(|(id, mem_type)| {
+                // type_mask is a bit field where each bit represents a memory type. If the bit is set
+                // to 1 it means we can use that type for our buffer. So this code finds the first
+                // memory type that has a `1` (or, is allowed), and is visible to the CPU.
+                vertex_buffer_req.type_mask & (1 << id) != 0
+                    && mem_type.properties.contains(m::Properties::CPU_VISIBLE)
+            })
+            .unwrap()
+            .into();
+        let vertex_buffer_memory = unsafe {
+            let memory = device.allocate_memory(upload_type, vertex_buffer_req.size).unwrap();
+            device.bind_buffer_memory(&memory, 0, &mut vertex_buffer).unwrap();
+            let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
+            ptr::copy_nonoverlapping(QUAD.as_ptr() as *const u8, mapping, QUAD_BUF_BYTES);
+            device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
+            device.unmap_memory(&memory);
+            memory
+        };
+
+        //////////////////
+
+        // const MAX_INSTANCES: usize = 6;
+        // let mut instance_buffer = unsafe {
+        //     device.create_buffer(
+        //         padded_len(
+        //             MAX_INSTANCES * mem::size_of::<InstanceData>(),
+        //             limits.non_coherent_atom_size,
+        //         ) as u64,
+        //         hal::buffer::Usage::VERTEX,
+        //     )
+        // }
+        // .unwrap();
+        // let instance_buffer_req = unsafe { device.get_buffer_requirements(&instance_buffer) };
+        // let instance_buffer_memory = unsafe {
+        //     let memory = device.allocate_memory(upload_type, instance_buffer_req.size).unwrap();
+        //     device.bind_buffer_memory(&memory, 0, &mut instance_buffer).unwrap();
+        //     let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
+        //     let instances: &[InstanceData] = &[
+        //         //
+        //         InstanceData { trans: TransMat4::scaling([1., 1., 1.]) },
+        //         InstanceData { trans: TransMat4::scaling([1., 1., 1.]) },
+        //         InstanceData { trans: TransMat4::scaling([1., 1., 1.]) },
+        //         InstanceData { trans: TransMat4::scaling([1., 1., 1.]) },
+        //         InstanceData { trans: TransMat4::scaling([1., 1., 1.]) },
+        //         InstanceData { trans: TransMat4::scaling([1., 1., 1.]) },
+        //     ];
+        //     ptr::copy_nonoverlapping(
+        //         instances.as_ptr() as *const u8,
+        //         mapping,
+        //         MAX_INSTANCES * mem::size_of::<InstanceData>(),
+        //     );
+        //     device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
+        //     device.unmap_memory(&memory);
+        //     memory
+        // };
 
         ///////////////////////////////////////////
         ////// LOAD, ALLOCATE & INIT IMAGE TEX
@@ -503,9 +581,17 @@ where
         let semaphore = device.create_semaphore().expect("Could not create semaphore");
         let cmd_buffer = unsafe { cmd_pool.allocate_one(command::Level::Primary) };
 
-        let pipeline_layout =
-            unsafe { device.create_pipeline_layout(iter::once(&set_layout), &[]) }
-                .expect("Can't create pipeline layout");
+        let pipeline_layout = {
+            let push_constant_bytes = TransMat4::BYTES as u32;
+            unsafe {
+                device.create_pipeline_layout(
+                    iter::once(&set_layout),
+                    &[(ShaderStageFlags::VERTEX, 0..push_constant_bytes)],
+                )
+            }
+        }
+        .expect("Can't create pipeline layout");
+
         let pipeline = {
             let vs_module = {
                 let spirv =
@@ -537,11 +623,11 @@ where
                         stride: mem::size_of::<Vertex>() as u32,
                         rate: VertexInputRate::Vertex,
                     },
-                    pso::VertexBufferDesc {
-                        binding: 1,
-                        stride: mem::size_of::<InstanceData>() as u32,
-                        rate: VertexInputRate::Instance(1),
-                    },
+                    // pso::VertexBufferDesc {
+                    //     binding: 1,
+                    //     stride: mem::size_of::<InstanceData>() as u32,
+                    //     rate: VertexInputRate::Vertex,
+                    // },
                 ];
                 let attributes = [
                     pso::AttributeDesc {
@@ -552,8 +638,40 @@ where
                     pso::AttributeDesc {
                         location: 1,
                         binding: 0,
-                        element: pso::Element { format: f::Format::Rg32Sfloat, offset: 8 },
+                        element: pso::Element { format: f::Format::Rg32Sfloat, offset: 4 * 2 },
                     },
+                    // pso::AttributeDesc {
+                    //     location: 2,
+                    //     binding: 1,
+                    //     element: pso::Element {
+                    //         format: f::Format::Rgba32Sfloat,
+                    //         offset: 2 * V + 0 * I,
+                    //     },
+                    // },
+                    // pso::AttributeDesc {
+                    //     location: 3,
+                    //     binding: 1,
+                    //     element: pso::Element {
+                    //         format: f::Format::Rgba32Sfloat,
+                    //         offset: 2 * V + 1 * I,
+                    //     },
+                    // },
+                    // pso::AttributeDesc {
+                    //     location: 4,
+                    //     binding: 1,
+                    //     element: pso::Element {
+                    //         format: f::Format::Rgba32Sfloat,
+                    //         offset: 2 * V + 2 * I,
+                    //     },
+                    // },
+                    // pso::AttributeDesc {
+                    //     location: 5,
+                    //     binding: 1,
+                    //     element: pso::Element {
+                    //         format: f::Format::Rgba32Sfloat,
+                    //         offset: 2 * V + 3 * I,
+                    //     },
+                    // },
                 ];
                 let mut pipeline_desc = pso::GraphicsPipelineDesc::new(
                     pso::PrimitiveAssemblerDesc::Vertex {
@@ -573,6 +691,7 @@ where
                     &pipeline_layout,
                     Subpass { index: 0, main_pass: &render_pass },
                 );
+                // TODO set pipeline_desc.depth_stencil
                 pipeline_desc.blender.targets.push(pso::ColorBlendDesc {
                     mask: pso::ColorMask::ALL,
                     blend: Some(pso::BlendState::ALPHA),
@@ -607,12 +726,14 @@ where
                 desc_pool,
                 set_layout,
                 vertex_buffer,
+                // instance_buffer,
                 image_upload_buffer,
                 pipeline,
                 pipeline_layout,
                 image_logo,
                 image_view,
-                buffer_memory,
+                vertex_buffer_memory,
+                // instance_buffer_memory,
                 image_memory,
                 image_upload_memory,
                 sampler,
@@ -621,6 +742,7 @@ where
                 cmd_pool,
                 cmd_buffer,
             }),
+            frame: 0,
         };
         println!("{:#?}", &me);
         me
@@ -699,9 +821,16 @@ where
                 &framebuffer,
                 self.viewport.rect,
                 &[command::ClearValue {
-                    color: command::ClearColor { float32: [0.2, 0.8, 0.8, 1.0] },
+                    color: command::ClearColor { float32: [0., 0., 0., 1.0] },
                 }],
                 command::SubpassContents::Inline,
+            );
+            inner.cmd_buffer.push_graphics_constants(
+                &inner.pipeline_layout,
+                ShaderStageFlags::VERTEX,
+                0,
+                TransMat4::translation([(self.frame % 100) as f32 * 0.01 - 0.5, 0., 0.])
+                    .as_u32_slice(),
             );
             inner.cmd_buffer.draw(0..6, 0..1);
             inner.cmd_buffer.end_render_pass();
@@ -723,6 +852,7 @@ where
                 self.recreate_swapchain();
             }
         }
+        self.frame += 1;
     }
 }
 
@@ -737,6 +867,7 @@ where
             self.device.destroy_descriptor_pool(inner.desc_pool);
             self.device.destroy_descriptor_set_layout(inner.set_layout);
             self.device.destroy_buffer(inner.vertex_buffer);
+            // self.device.destroy_buffer(inner.instance_buffer);
             self.device.destroy_buffer(inner.image_upload_buffer);
             self.device.destroy_image(inner.image_logo);
             self.device.destroy_image_view(inner.image_view);
@@ -746,7 +877,8 @@ where
             self.device.destroy_fence(inner.fence);
             self.device.destroy_render_pass(inner.render_pass);
             inner.surface.unconfigure_swapchain(&self.device);
-            self.device.free_memory(inner.buffer_memory);
+            self.device.free_memory(inner.vertex_buffer_memory);
+            // self.device.free_memory(inner.instance_buffer_memory);
             self.device.free_memory(inner.image_memory);
             self.device.free_memory(inner.image_upload_memory);
             self.device.destroy_graphics_pipeline(inner.pipeline);
