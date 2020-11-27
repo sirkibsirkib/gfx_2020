@@ -18,18 +18,35 @@ use std::{
     ptr,
 };
 
-const DIMS: window::Extent2D = window::Extent2D {
-    width: 1024,
-    height: 768,
-};
+mod want;
+
+const DIMS: window::Extent2D = window::Extent2D { width: 1024, height: 768 };
 
 const ENTRY_NAME: &str = "main";
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 #[allow(non_snake_case)]
 struct Vertex {
     a_Pos: [f32; 2], // on screen
     a_Uv: [f32; 2],  // in texture
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+#[allow(non_snake_case)]
+struct InstanceData {
+    trans: [[f32; 4]; 4],
+    tex_scissor: Rect,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct Rect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
 }
 
 const PIC_X: f32 = 0.5;
@@ -65,9 +82,7 @@ fn main() {
     let event_loop = winit::event_loop::EventLoop::new();
 
     let wb = winit::window::WindowBuilder::new()
-        .with_min_inner_size(winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(
-            64.0, 64.0,
-        )))
+        .with_min_inner_size(winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(64.0, 64.0)))
         .with_inner_size(winit::dpi::Size::Physical(winit::dpi::PhysicalSize::new(
             DIMS.width,
             DIMS.height,
@@ -77,11 +92,7 @@ fn main() {
     // instantiate backend
     let window = wb.build(&event_loop).unwrap();
     let instance = back::Instance::create("gfx-rs quad", 1).expect("Failed to create an instance!");
-    let surface = unsafe {
-        instance
-            .create_surface(&window)
-            .expect("Failed to create a surface!")
-    };
+    let surface = unsafe { instance.create_surface(&window).expect("Failed to create a surface!") };
 
     for adapter in instance.enumerate_adapters().iter() {
         // DEBUG
@@ -113,10 +124,8 @@ fn main() {
                 } => *control_flow = winit::event_loop::ControlFlow::Exit,
                 winit::event::WindowEvent::Resized(dims) => {
                     println!("resized to {:?}", dims);
-                    renderer.dimensions = window::Extent2D {
-                        width: dims.width,
-                        height: dims.height,
-                    };
+                    renderer.dimensions =
+                        window::Extent2D { width: dims.width, height: dims.height };
                     renderer.recreate_swapchain();
                 }
                 _ => {}
@@ -160,11 +169,15 @@ struct RendererInner<B: hal::Backend> {
     vertex_buffer: B::Buffer,
     image_upload_buffer: B::Buffer,
     image_logo: B::Image,
-    image_srv: B::ImageView,
+    image_view: B::ImageView,
     buffer_memory: B::Memory,
     image_memory: B::Memory,
     image_upload_memory: B::Memory,
     sampler: B::Sampler,
+}
+
+const fn padded_len(n: usize, non_coherent_atom_size: usize) -> usize {
+    ((n + non_coherent_atom_size - 1) / non_coherent_atom_size) * non_coherent_atom_size
 }
 
 impl<B> Renderer<B>
@@ -193,10 +206,7 @@ where
         dbg!(&memory_types, &limits, &family);
         let (mut queue_group, device) = {
             let mut gpu = unsafe {
-                adapter
-                    .physical_device
-                    .open(&[(family, &[1.0])], hal::Features::empty())
-                    .unwrap()
+                adapter.physical_device.open(&[(family, &[1.0])], hal::Features::empty()).unwrap()
             };
             (gpu.queue_groups.pop().unwrap(), gpu.device)
         };
@@ -218,9 +228,7 @@ where
                         // SOME IMAGE
                         // see quad.frag. "arguments" to shader
                         ty: pso::DescriptorType::Image {
-                            ty: pso::ImageDescriptorType::Sampled {
-                                with_sampler: false,
-                            },
+                            ty: pso::ImageDescriptorType::Sampled { with_sampler: false },
                         },
                         count: 1,
                         stage_flags: ShaderStageFlags::FRAGMENT, // need during frament
@@ -247,16 +255,11 @@ where
                 &[
                     pso::DescriptorRangeDesc {
                         ty: pso::DescriptorType::Image {
-                            ty: pso::ImageDescriptorType::Sampled {
-                                with_sampler: false,
-                            },
+                            ty: pso::ImageDescriptorType::Sampled { with_sampler: false },
                         },
                         count: 1,
                     },
-                    pso::DescriptorRangeDesc {
-                        ty: pso::DescriptorType::Sampler,
-                        count: 1,
-                    },
+                    pso::DescriptorRangeDesc { ty: pso::DescriptorType::Sampler, count: 1 },
                 ],
                 pso::DescriptorPoolCreateFlags::empty(),
             )
@@ -267,18 +270,18 @@ where
         ///////////////////////////////////////////////////////
         // ALLOCATE AND INIT VERTEX BUFFER
         println!("Memory types: {:#?}", memory_types);
-        let non_coherent_alignment = limits.non_coherent_atom_size;
 
         const QUAD_BUF_STRIDE: usize = mem::size_of::<Vertex>();
         const QUAD_BUF_BYTES: usize = QUAD.len() * QUAD_BUF_STRIDE;
         assert_ne!(QUAD_BUF_BYTES, 0);
-        let padded_buffer_len = ((QUAD_BUF_BYTES + non_coherent_alignment - 1)
-            / non_coherent_alignment)
-            * non_coherent_alignment;
 
-        let mut vertex_buffer =
-            unsafe { device.create_buffer(padded_buffer_len as u64, hal::buffer::Usage::VERTEX) }
-                .unwrap();
+        let mut vertex_buffer = unsafe {
+            device.create_buffer(
+                padded_len(QUAD_BUF_BYTES, limits.non_coherent_atom_size) as u64,
+                hal::buffer::Usage::VERTEX,
+            )
+        }
+        .unwrap();
 
         let buffer_req = unsafe { device.get_buffer_requirements(&vertex_buffer) };
 
@@ -295,61 +298,55 @@ where
             .unwrap()
             .into();
         let buffer_memory = unsafe {
-            let memory = device
-                .allocate_memory(upload_type, buffer_req.size)
-                .unwrap();
-            device
-                .bind_buffer_memory(&memory, 0, &mut vertex_buffer)
-                .unwrap();
+            let memory = device.allocate_memory(upload_type, buffer_req.size).unwrap();
+            device.bind_buffer_memory(&memory, 0, &mut vertex_buffer).unwrap();
             let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
             ptr::copy_nonoverlapping(QUAD.as_ptr() as *const u8, mapping, QUAD_BUF_BYTES);
-            device
-                .flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL)))
-                .unwrap();
+            device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
             device.unmap_memory(&memory);
             memory
         };
+        let sampler = unsafe {
+            device.create_sampler(&i::SamplerDesc::new(i::Filter::Nearest, i::WrapMode::Clamp))
+        }
+        .expect("Can't create sampler");
+        let mut cmd_pool = unsafe {
+            device
+                .create_command_pool(queue_group.family, hal::pool::CommandPoolCreateFlags::empty())
+        }
+        .expect("Can't create command pool");
+        let mut fence = device.create_fence(false).expect("Could not create fence");
 
         ///////////////////////////////////////////
-        // LOAD, ALLOCATE & INIT IMAGE TEX
-        let img = image::io::Reader::open("./src/data/logo.png")
-            .unwrap()
-            .decode()
-            .unwrap()
-            .to_rgba();
-        // let img = image::load(
-        //     Cursor::new(include_bytes!("data/logo.png")),
-        //     image::ImageFormat::Png,
-        // )
-        // .unwrap()
-        // .to_rgba();
-        let (width, height) = img.dimensions();
-        let kind = i::Kind::D2(width as i::Size, height as i::Size, 1, 1);
-        let row_alignment_mask = limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+        ////// LOAD, ALLOCATE & INIT IMAGE TEX
+        let img_rgba =
+            image::io::Reader::open("./src/data/logo.png").unwrap().decode().unwrap().to_rgba();
+        let (width, height) = img_rgba.dimensions();
         let image_stride = 4usize;
-        let row_pitch = (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
-        let upload_size = (height * row_pitch) as usize;
-        let padded_upload_size = ((upload_size + non_coherent_alignment - 1)
-            / non_coherent_alignment)
-            * non_coherent_alignment;
+        let row_pitch = {
+            let row_alignment_mask = limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+            (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask
+        };
 
-        let mut image_upload_buffer = unsafe {
-            device.create_buffer(padded_upload_size as u64, hal::buffer::Usage::TRANSFER_SRC)
-        }
-        .unwrap();
+        let mut image_upload_buffer = {
+            let upload_size = (height * row_pitch) as usize;
+            unsafe {
+                device.create_buffer(
+                    padded_len(upload_size, limits.non_coherent_atom_size) as u64,
+                    hal::buffer::Usage::TRANSFER_SRC,
+                )
+            }
+            .unwrap()
+        };
         let image_mem_reqs = unsafe { device.get_buffer_requirements(&image_upload_buffer) };
 
         // copy image data into staging buffer
         let image_upload_memory = unsafe {
-            let memory = device
-                .allocate_memory(upload_type, image_mem_reqs.size)
-                .unwrap();
-            device
-                .bind_buffer_memory(&memory, 0, &mut image_upload_buffer)
-                .unwrap();
+            let memory = device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
+            device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
             let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
             for y in 0..height as usize {
-                let row = &(*img)[y * (width as usize) * image_stride
+                let row = &(*img_rgba)[y * (width as usize) * image_stride
                     ..(y + 1) * (width as usize) * image_stride];
                 ptr::copy_nonoverlapping(
                     row.as_ptr(),
@@ -357,15 +354,13 @@ where
                     width as usize * image_stride,
                 );
             }
-            device
-                .flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL)))
-                .unwrap();
+            device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
             device.unmap_memory(&memory);
             memory
         };
         let mut image_logo = unsafe {
             device.create_image(
-                kind,
+                i::Kind::D2(width as i::Size, height as i::Size, 1, 1),
                 1,
                 ColorFormat::SELF,
                 i::Tiling::Optimal,
@@ -374,62 +369,44 @@ where
             )
         }
         .unwrap();
-        let image_req = unsafe { device.get_image_requirements(&image_logo) };
-
-        let device_type = memory_types
-            .iter()
-            .enumerate()
-            .position(|(id, memory_type)| {
-                image_req.type_mask & (1 << id) != 0
-                    && memory_type.properties.contains(m::Properties::DEVICE_LOCAL)
-            })
-            .unwrap()
-            .into();
-        let image_memory = unsafe { device.allocate_memory(device_type, image_req.size) }.unwrap();
+        let image_memory = {
+            let image_req = unsafe { device.get_image_requirements(&image_logo) };
+            let device_type = memory_types
+                .iter()
+                .enumerate()
+                .position(|(id, memory_type)| {
+                    image_req.type_mask & (1 << id) != 0
+                        && memory_type.properties.contains(m::Properties::DEVICE_LOCAL)
+                })
+                .unwrap()
+                .into();
+            unsafe { device.allocate_memory(device_type, image_req.size) }.unwrap()
+        };
 
         unsafe { device.bind_image_memory(&image_memory, 0, &mut image_logo) }.unwrap();
-        let image_srv = unsafe {
+        let image_view = unsafe {
             device.create_image_view(
                 &image_logo,
                 i::ViewKind::D2,
                 ColorFormat::SELF,
                 Swizzle::NO,
-                i::SubresourceRange {
-                    aspects: f::Aspects::COLOR,
-                    ..Default::default()
-                },
+                i::SubresourceRange { aspects: f::Aspects::COLOR, ..Default::default() },
             )
         }
         .unwrap();
-
-        let sampler = unsafe {
-            device.create_sampler(&i::SamplerDesc::new(i::Filter::Linear, i::WrapMode::Clamp))
-        }
-        .expect("Can't create sampler");
-
         unsafe {
             device.write_descriptor_sets(iter::once(pso::DescriptorSetWrite {
                 set: &desc_set,
                 binding: 0,
                 array_offset: 0,
-                descriptors: vec![
-                    pso::Descriptor::Image(&image_srv, i::Layout::ShaderReadOnlyOptimal),
+                descriptors: [
+                    pso::Descriptor::Image(&image_view, i::Layout::ShaderReadOnlyOptimal),
                     pso::Descriptor::Sampler(&sampler),
-                ],
+                ]
+                .iter(),
             }));
         }
-
-        // copy buffer to texture
-        let mut cmd_pool = unsafe {
-            device.create_command_pool(
-                queue_group.family,
-                hal::pool::CommandPoolCreateFlags::empty(),
-            )
-        }
-        .expect("Can't create command pool");
-        let mut fence = device.create_fence(false).expect("Could not create fence");
         unsafe {
-            //
             let mut cmd_buffer = cmd_pool.allocate_one(command::Level::Primary);
             cmd_buffer.begin_primary(command::CommandBufferFlags::ONE_TIME_SUBMIT);
 
@@ -438,10 +415,7 @@ where
                     ..(i::Access::TRANSFER_WRITE, i::Layout::TransferDstOptimal),
                 target: &image_logo,
                 families: None,
-                range: i::SubresourceRange {
-                    aspects: f::Aspects::COLOR,
-                    ..Default::default()
-                },
+                range: i::SubresourceRange { aspects: f::Aspects::COLOR, ..Default::default() },
             };
 
             cmd_buffer.pipeline_barrier(
@@ -464,11 +438,7 @@ where
                         layers: 0..1,
                     },
                     image_offset: i::Offset { x: 0, y: 0, z: 0 },
-                    image_extent: i::Extent {
-                        width,
-                        height,
-                        depth: 1,
-                    },
+                    image_extent: i::Extent { width, height, depth: 1 },
                 }],
             );
 
@@ -477,10 +447,7 @@ where
                     ..(i::Access::SHADER_READ, i::Layout::ShaderReadOnlyOptimal),
                 target: &image_logo,
                 families: None,
-                range: i::SubresourceRange {
-                    aspects: f::Aspects::COLOR,
-                    ..Default::default()
-                },
+                range: i::SubresourceRange { aspects: f::Aspects::COLOR, ..Default::default() },
             };
             cmd_buffer.pipeline_barrier(
                 PipelineStage::TRANSFER..PipelineStage::FRAGMENT_SHADER,
@@ -489,9 +456,7 @@ where
             );
             cmd_buffer.finish();
             queue_group.queues[0].submit_without_semaphores(Some(&cmd_buffer), Some(&mut fence));
-            device
-                .wait_for_fence(&fence, !0)
-                .expect("Can't wait for fence");
+            device.wait_for_fence(&fence, !0).expect("Can't wait for fence");
         }
 
         let caps = surface.capabilities(&adapter.physical_device);
@@ -501,7 +466,7 @@ where
             formats
                 .iter()
                 .find(|format| format.base_format().1 == ChannelType::Srgb)
-                .map(|format| *format)
+                .copied()
                 .unwrap_or(formats[0])
         });
 
@@ -509,9 +474,7 @@ where
         println!("{:?}", swap_config);
         let extent = swap_config.extent;
         unsafe {
-            surface
-                .configure_swapchain(&device, swap_config)
-                .expect("Can't configure swapchain");
+            surface.configure_swapchain(&device, swap_config).expect("Can't configure swapchain");
         };
 
         let render_pass = {
@@ -537,9 +500,7 @@ where
                 .expect("Can't create render pass")
         };
 
-        let semaphore = device
-            .create_semaphore()
-            .expect("Could not create semaphore");
+        let semaphore = device.create_semaphore().expect("Could not create semaphore");
         let cmd_buffer = unsafe { cmd_pool.allocate_one(command::Level::Primary) };
 
         let pipeline_layout =
@@ -560,49 +521,40 @@ where
             };
 
             let pipeline = {
-                let (vs_entry, fs_entry) = (
-                    pso::EntryPoint {
-                        entry: ENTRY_NAME,
-                        module: &vs_module,
-                        specialization: hal::spec_const_list![0.8f32],
-                    },
-                    pso::EntryPoint {
-                        entry: ENTRY_NAME,
-                        module: &fs_module,
-                        specialization: pso::Specialization::default(),
-                    },
-                );
-
-                let subpass = Subpass {
-                    index: 0,
-                    main_pass: &render_pass,
+                let vs_entry = pso::EntryPoint {
+                    entry: ENTRY_NAME,
+                    module: &vs_module,
+                    specialization: hal::spec_const_list![0.8f32],
                 };
-
-                let vertex_buffers = vec![pso::VertexBufferDesc {
-                    binding: 0,
-                    stride: mem::size_of::<Vertex>() as u32,
-                    rate: VertexInputRate::Vertex,
-                }];
-
+                let fs_entry = pso::EntryPoint {
+                    entry: ENTRY_NAME,
+                    module: &fs_module,
+                    specialization: pso::Specialization::default(),
+                };
+                let vertex_buffers = [
+                    pso::VertexBufferDesc {
+                        binding: 0,
+                        stride: mem::size_of::<Vertex>() as u32,
+                        rate: VertexInputRate::Vertex,
+                    },
+                    pso::VertexBufferDesc {
+                        binding: 1,
+                        stride: mem::size_of::<InstanceData>() as u32,
+                        rate: VertexInputRate::Instance(1),
+                    },
+                ];
                 let attributes = [
                     pso::AttributeDesc {
                         location: 0,
                         binding: 0,
-                        element: pso::Element {
-                            format: f::Format::Rg32Sfloat,
-                            offset: 0,
-                        },
+                        element: pso::Element { format: f::Format::Rg32Sfloat, offset: 0 },
                     },
                     pso::AttributeDesc {
                         location: 1,
                         binding: 0,
-                        element: pso::Element {
-                            format: f::Format::Rg32Sfloat,
-                            offset: 8,
-                        },
+                        element: pso::Element { format: f::Format::Rg32Sfloat, offset: 8 },
                     },
                 ];
-
                 let mut pipeline_desc = pso::GraphicsPipelineDesc::new(
                     pso::PrimitiveAssemblerDesc::Vertex {
                         buffers: &vertex_buffers,
@@ -619,35 +571,24 @@ where
                     pso::Rasterizer::FILL,
                     Some(fs_entry),
                     &pipeline_layout,
-                    subpass,
+                    Subpass { index: 0, main_pass: &render_pass },
                 );
-
                 pipeline_desc.blender.targets.push(pso::ColorBlendDesc {
                     mask: pso::ColorMask::ALL,
                     blend: Some(pso::BlendState::ALPHA),
                 });
-
-                unsafe { device.create_graphics_pipeline(&pipeline_desc, None) }
+                unsafe { device.create_graphics_pipeline(&pipeline_desc, None) }.unwrap()
             };
-
             unsafe {
                 device.destroy_shader_module(vs_module);
-            }
-            unsafe {
                 device.destroy_shader_module(fs_module);
             }
-
-            pipeline.unwrap()
+            pipeline
         };
 
         // Rendering setup
         let viewport = pso::Viewport {
-            rect: pso::Rect {
-                x: 0,
-                y: 0,
-                w: extent.width as _,
-                h: extent.height as _,
-            },
+            rect: pso::Rect { x: 0, y: 0, w: extent.width as _, h: extent.height as _ },
             depth: 0.0..1.0,
         };
 
@@ -670,7 +611,7 @@ where
                 pipeline,
                 pipeline_layout,
                 image_logo,
-                image_srv,
+                image_view,
                 buffer_memory,
                 image_memory,
                 image_upload_memory,
@@ -730,20 +671,14 @@ where
         };
 
         unsafe {
-            self.device
-                .wait_for_fence(&inner.fence, !0)
-                .expect("Failed to wait for fence");
-            self.device
-                .reset_fence(&inner.fence)
-                .expect("Failed to reset fence");
+            self.device.wait_for_fence(&inner.fence, !0).expect("Failed to wait for fence");
+            self.device.reset_fence(&inner.fence).expect("Failed to reset fence");
             inner.cmd_pool.reset(false);
         }
 
         // Rendering
         unsafe {
-            inner
-                .cmd_buffer
-                .begin_primary(command::CommandBufferFlags::ONE_TIME_SUBMIT);
+            inner.cmd_buffer.begin_primary(command::CommandBufferFlags::ONE_TIME_SUBMIT);
 
             inner.cmd_buffer.set_viewports(0, &[self.viewport.clone()]); // normalized device -> screen coords
             inner.cmd_buffer.set_scissors(0, &[self.viewport.rect]); // TODO mess with this and see if it crops
@@ -764,32 +699,26 @@ where
                 &framebuffer,
                 self.viewport.rect,
                 &[command::ClearValue {
-                    color: command::ClearColor {
-                        float32: [0.2, 0.8, 0.8, 1.0],
-                    },
+                    color: command::ClearColor { float32: [0.2, 0.8, 0.8, 1.0] },
                 }],
                 command::SubpassContents::Inline,
             );
             inner.cmd_buffer.draw(0..6, 0..1);
             inner.cmd_buffer.end_render_pass();
             inner.cmd_buffer.finish();
-
             let submission = Submission {
                 command_buffers: iter::once(&inner.cmd_buffer),
                 wait_semaphores: None,
                 signal_semaphores: iter::once(&inner.semaphore),
             };
             self.queue_group.queues[0].submit(submission, Some(&inner.fence));
-
             // present frame
             let result = self.queue_group.queues[0].present(
                 &mut inner.surface,
                 surface_image,
                 Some(&inner.semaphore), // waits for
             );
-
             self.device.destroy_framebuffer(framebuffer);
-
             if result.is_err() {
                 self.recreate_swapchain();
             }
@@ -807,11 +736,10 @@ where
             let mut inner = ManuallyDrop::take(&mut self.inner);
             self.device.destroy_descriptor_pool(inner.desc_pool);
             self.device.destroy_descriptor_set_layout(inner.set_layout);
-
             self.device.destroy_buffer(inner.vertex_buffer);
             self.device.destroy_buffer(inner.image_upload_buffer);
             self.device.destroy_image(inner.image_logo);
-            self.device.destroy_image_view(inner.image_srv);
+            self.device.destroy_image_view(inner.image_view);
             self.device.destroy_sampler(inner.sampler);
             self.device.destroy_command_pool(inner.cmd_pool);
             self.device.destroy_semaphore(inner.semaphore);
