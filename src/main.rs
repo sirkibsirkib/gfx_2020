@@ -74,7 +74,7 @@ struct Vertex {
 #[derive(Debug, Clone, Copy)]
 #[allow(non_snake_case)]
 struct InstanceData {
-    // 4*4*4+4*4=80 bytes
+    // 4*4*4=64 bytes
     trans: TransMat4,
     // tex_scissor: Rect,
 }
@@ -88,8 +88,8 @@ struct Rect {
     h: f32,
 }
 
-const PIC_X: f32 = 0.5;
-const PIC_Y: f32 = 0.33;
+const PIC_X: f32 = 1.;
+const PIC_Y: f32 = 1.;
 const QUAD: [Vertex; 6] = [
     Vertex {
         a_Pos: [-PIC_X, PIC_Y], // A
@@ -208,12 +208,12 @@ struct RendererInner<B: hal::Backend> {
     cmd_buffer: B::CommandBuffer,
     set_layout: B::DescriptorSetLayout,
     vertex_buffer: B::Buffer,
-    // instance_buffer: B::Buffer,
+    instance_buffer: B::Buffer,
     image_upload_buffer: B::Buffer,
     image_logo: B::Image,
     image_view: B::ImageView,
     vertex_buffer_memory: B::Memory,
-    // instance_buffer_memory: B::Memory,
+    instance_buffer_memory: B::Memory,
     image_memory: B::Memory,
     image_upload_memory: B::Memory,
     sampler: B::Sampler,
@@ -360,40 +360,38 @@ where
 
         //////////////////
 
-        // const MAX_INSTANCES: usize = 6;
-        // let mut instance_buffer = unsafe {
-        //     device.create_buffer(
-        //         padded_len(
-        //             MAX_INSTANCES * mem::size_of::<InstanceData>(),
-        //             limits.non_coherent_atom_size,
-        //         ) as u64,
-        //         hal::buffer::Usage::VERTEX,
-        //     )
-        // }
-        // .unwrap();
-        // let instance_buffer_req = unsafe { device.get_buffer_requirements(&instance_buffer) };
-        // let instance_buffer_memory = unsafe {
-        //     let memory = device.allocate_memory(upload_type, instance_buffer_req.size).unwrap();
-        //     device.bind_buffer_memory(&memory, 0, &mut instance_buffer).unwrap();
-        //     let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
-        //     let instances: &[InstanceData] = &[
-        //         //
-        //         InstanceData { trans: TransMat4::scaling([1., 1., 1.]) },
-        //         InstanceData { trans: TransMat4::scaling([1., 1., 1.]) },
-        //         InstanceData { trans: TransMat4::scaling([1., 1., 1.]) },
-        //         InstanceData { trans: TransMat4::scaling([1., 1., 1.]) },
-        //         InstanceData { trans: TransMat4::scaling([1., 1., 1.]) },
-        //         InstanceData { trans: TransMat4::scaling([1., 1., 1.]) },
-        //     ];
-        //     ptr::copy_nonoverlapping(
-        //         instances.as_ptr() as *const u8,
-        //         mapping,
-        //         MAX_INSTANCES * mem::size_of::<InstanceData>(),
-        //     );
-        //     device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
-        //     device.unmap_memory(&memory);
-        //     memory
-        // };
+        const MAX_INSTANCES: usize = 6;
+        let mut instance_buffer = unsafe {
+            device.create_buffer(
+                padded_len(
+                    MAX_INSTANCES * mem::size_of::<InstanceData>(),
+                    limits.non_coherent_atom_size,
+                ) as u64,
+                hal::buffer::Usage::VERTEX,
+            )
+        }
+        .unwrap();
+        let instance_buffer_req = unsafe { device.get_buffer_requirements(&instance_buffer) };
+        let instance_buffer_memory = unsafe {
+            let memory = device.allocate_memory(upload_type, instance_buffer_req.size).unwrap();
+            device.bind_buffer_memory(&memory, 0, &mut instance_buffer).unwrap();
+            let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
+            let instances: &[InstanceData] = &[
+                //
+                InstanceData { trans: TransMat4::translation([0., 0., 0.]) },
+                InstanceData { trans: TransMat4::translation([0.1, 0.2, 0.1]) },
+                InstanceData { trans: TransMat4::translation([0.2, 0.4, 0.]) },
+                InstanceData { trans: TransMat4::translation([0.3, 0.6, 0.1]) },
+            ];
+            ptr::copy_nonoverlapping(
+                instances.as_ptr() as *const u8,
+                mapping,
+                MAX_INSTANCES * mem::size_of::<InstanceData>(),
+            );
+            device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
+            device.unmap_memory(&memory);
+            memory
+        };
 
         ///////////////////////////////////////////
         ////// LOAD, ALLOCATE & INIT IMAGE TEX
@@ -610,26 +608,46 @@ where
                 let vs_entry = pso::EntryPoint {
                     entry: ENTRY_NAME,
                     module: &vs_module,
-                    specialization: hal::spec_const_list![0.8f32],
+                    specialization: pso::Specialization::default(),
                 };
                 let fs_entry = pso::EntryPoint {
                     entry: ENTRY_NAME,
                     module: &fs_module,
                     specialization: pso::Specialization::default(),
                 };
-                let vertex_buffers = [
+                let buffers = &[
                     pso::VertexBufferDesc {
                         binding: 0,
                         stride: mem::size_of::<Vertex>() as u32,
                         rate: VertexInputRate::Vertex,
                     },
-                    // pso::VertexBufferDesc {
-                    //     binding: 1,
-                    //     stride: mem::size_of::<InstanceData>() as u32,
-                    //     rate: VertexInputRate::Vertex,
-                    // },
+                    pso::VertexBufferDesc {
+                        binding: 1,
+                        stride: mem::size_of::<InstanceData>() as u32,
+                        rate: VertexInputRate::Instance(1),
+                    },
                 ];
-                let attributes = [
+                let attributes = &[
+                    pso::AttributeDesc {
+                        location: 2,
+                        binding: 1,
+                        element: pso::Element { format: f::Format::Rgba32Sfloat, offset: 0 },
+                    },
+                    pso::AttributeDesc {
+                        location: 3,
+                        binding: 1,
+                        element: pso::Element { format: f::Format::Rgba32Sfloat, offset: 16 },
+                    },
+                    pso::AttributeDesc {
+                        location: 4,
+                        binding: 1,
+                        element: pso::Element { format: f::Format::Rgba32Sfloat, offset: 32 },
+                    },
+                    pso::AttributeDesc {
+                        location: 5,
+                        binding: 1,
+                        element: pso::Element { format: f::Format::Rgba32Sfloat, offset: 48 },
+                    },
                     pso::AttributeDesc {
                         location: 0,
                         binding: 0,
@@ -638,45 +656,13 @@ where
                     pso::AttributeDesc {
                         location: 1,
                         binding: 0,
-                        element: pso::Element { format: f::Format::Rg32Sfloat, offset: 4 * 2 },
+                        element: pso::Element { format: f::Format::Rg32Sfloat, offset: 8 },
                     },
-                    // pso::AttributeDesc {
-                    //     location: 2,
-                    //     binding: 1,
-                    //     element: pso::Element {
-                    //         format: f::Format::Rgba32Sfloat,
-                    //         offset: 2 * V + 0 * I,
-                    //     },
-                    // },
-                    // pso::AttributeDesc {
-                    //     location: 3,
-                    //     binding: 1,
-                    //     element: pso::Element {
-                    //         format: f::Format::Rgba32Sfloat,
-                    //         offset: 2 * V + 1 * I,
-                    //     },
-                    // },
-                    // pso::AttributeDesc {
-                    //     location: 4,
-                    //     binding: 1,
-                    //     element: pso::Element {
-                    //         format: f::Format::Rgba32Sfloat,
-                    //         offset: 2 * V + 2 * I,
-                    //     },
-                    // },
-                    // pso::AttributeDesc {
-                    //     location: 5,
-                    //     binding: 1,
-                    //     element: pso::Element {
-                    //         format: f::Format::Rgba32Sfloat,
-                    //         offset: 2 * V + 3 * I,
-                    //     },
-                    // },
                 ];
                 let mut pipeline_desc = pso::GraphicsPipelineDesc::new(
                     pso::PrimitiveAssemblerDesc::Vertex {
-                        buffers: &vertex_buffers,
-                        attributes: &attributes,
+                        buffers,
+                        attributes,
                         input_assembler: pso::InputAssemblerDesc {
                             primitive: pso::Primitive::TriangleList,
                             with_adjacency: false,
@@ -726,14 +712,14 @@ where
                 desc_pool,
                 set_layout,
                 vertex_buffer,
-                // instance_buffer,
+                instance_buffer,
                 image_upload_buffer,
                 pipeline,
                 pipeline_layout,
                 image_logo,
                 image_view,
                 vertex_buffer_memory,
-                // instance_buffer_memory,
+                instance_buffer_memory,
                 image_memory,
                 image_upload_memory,
                 sampler,
@@ -809,6 +795,10 @@ where
                 0,
                 iter::once((&inner.vertex_buffer, hal::buffer::SubRange::WHOLE)),
             );
+            inner.cmd_buffer.bind_vertex_buffers(
+                1,
+                iter::once((&inner.instance_buffer, hal::buffer::SubRange::WHOLE)),
+            );
             inner.cmd_buffer.bind_graphics_descriptor_sets(
                 &inner.pipeline_layout,
                 0,
@@ -829,10 +819,9 @@ where
                 &inner.pipeline_layout,
                 ShaderStageFlags::VERTEX,
                 0,
-                TransMat4::translation([(self.frame % 100) as f32 * 0.01 - 0.5, 0., 0.])
-                    .as_u32_slice(),
+                TransMat4::scaling([0.5, 0.5, 0.5]).as_u32_slice(),
             );
-            inner.cmd_buffer.draw(0..6, 0..1);
+            inner.cmd_buffer.draw(0..6, 0..4);
             inner.cmd_buffer.end_render_pass();
             inner.cmd_buffer.finish();
             let submission = Submission {
@@ -867,7 +856,7 @@ where
             self.device.destroy_descriptor_pool(inner.desc_pool);
             self.device.destroy_descriptor_set_layout(inner.set_layout);
             self.device.destroy_buffer(inner.vertex_buffer);
-            // self.device.destroy_buffer(inner.instance_buffer);
+            self.device.destroy_buffer(inner.instance_buffer);
             self.device.destroy_buffer(inner.image_upload_buffer);
             self.device.destroy_image(inner.image_logo);
             self.device.destroy_image_view(inner.image_view);
@@ -878,7 +867,7 @@ where
             self.device.destroy_render_pass(inner.render_pass);
             inner.surface.unconfigure_swapchain(&self.device);
             self.device.free_memory(inner.vertex_buffer_memory);
-            // self.device.free_memory(inner.instance_buffer_memory);
+            self.device.free_memory(inner.instance_buffer_memory);
             self.device.free_memory(inner.image_memory);
             self.device.free_memory(inner.image_upload_memory);
             self.device.destroy_graphics_pipeline(inner.pipeline);
