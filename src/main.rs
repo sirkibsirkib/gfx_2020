@@ -1,3 +1,9 @@
+/* TODO
+- tex scissor into instance data
+- depth buffer & testing
+- mat4 stuff
+*/
+
 use gfx_backend_vulkan as back;
 use gfx_hal::{
     self as hal, command,
@@ -94,14 +100,19 @@ struct VertexData {
 #[allow(non_snake_case)]
 struct InstanceData {
     trans: TransMat4,
-    // tex_scissor: Rect,
+    tex_scissor: Rect,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 struct Rect {
     top_left: [f32; 2],
     size: [f32; 2],
+}
+impl Default for Rect {
+    fn default() -> Self {
+        Self { top_left: [0.; 2], size: [1.; 2] }
+    }
 }
 
 mod vert_data_consts {
@@ -379,7 +390,11 @@ where
             // let sample_distribution = rand::distributions::uniform::Uniform::new(0., 1.);
             // let mut rng = rand::thread_rng();
             let scaling = TransMat4::scaling([0.2; 3]);
+            for t in typed_mapping.iter_mut() {
+                t.tex_scissor = Rect { top_left: [0.; 2], size: [0.2; 2] };
+            }
             typed_mapping[0].trans = TransMat4::translation([0.0, 0.0, 0.]).dot(&scaling);
+            typed_mapping[0].tex_scissor.top_left = [0.2, 0.];
             typed_mapping[1].trans = TransMat4::translation([0.3, 0.0, 0.]).dot(&scaling);
             typed_mapping[2].trans = TransMat4::translation([0.0, 0.3, 0.]).dot(&scaling);
             typed_mapping[3].trans = TransMat4::translation([0.3, 0.3, 0.]).dot(&scaling);
@@ -663,6 +678,17 @@ where
                             element: pso::Element {
                                 format: f::Format::Rgba32Sfloat,
                                 offset: i * mem::size_of::<[f32; 4]>() as u32,
+                            },
+                        });
+                    }
+                    for i in 0..2 {
+                        attributes.push(pso::AttributeDesc {
+                            location: i + 2 + 4,
+                            binding: 1,
+                            element: pso::Element {
+                                format: f::Format::Rgba32Sfloat,
+                                offset: 4 * mem::size_of::<[f32; 4]>() as u32
+                                    + i * mem::size_of::<[f32; 2]>() as u32,
                             },
                         });
                     }

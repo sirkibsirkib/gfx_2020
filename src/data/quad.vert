@@ -16,13 +16,16 @@ layout(location = 3) in vec4 model_1;
 layout(location = 4) in vec4 model_2;
 layout(location = 5) in vec4 model_3;
 
+layout(location = 6) in vec2 tex_scissor_top_left;
+layout(location = 7) in vec2 tex_scissor_size;
+
 layout(location = 0) out vec2 v_uv;
 out gl_PerVertex {
     vec4 gl_Position;
 };
 
 void main() {
-    v_uv = a_uv;
+    v_uv = tex_scissor_top_left + a_uv*tex_scissor_size;
     vec4 pos = vec4(a_pos, 0.0, 1.0);
     mat4 model = mat4(model_0, model_1, model_2 ,model_3);
     mat4 view = mat4(pc.trans_0, pc.trans_1, pc.trans_2, pc.trans_3);
