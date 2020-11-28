@@ -23,6 +23,25 @@ use std::{
 struct TransMat4([[f32; 4]; 4]);
 impl TransMat4 {
     const BYTES: usize = std::mem::size_of::<Self>();
+    fn row(&self, i: usize) -> [f32; 4] {
+        (self.0)[i]
+    }
+    fn col(&self, i: usize) -> [f32; 4] {
+        let a = self.0;
+        [a[0][i], a[1][i], a[2][i], a[3][i]]
+    }
+    fn dot(&self, other: &Self) -> Self {
+        fn vec4_dot(a: [f32; 4], b: [f32; 4]) -> f32 {
+            a.iter().zip(b.iter()).fold(0., |acc, (&a, &b)| acc + a * b)
+        }
+        let mut x = [[0.; 4]; 4];
+        for i in 0..4 {
+            for j in 0..4 {
+                x[i][j] = vec4_dot(self.row(i), other.col(j));
+            }
+        }
+        Self(x)
+    }
     fn scaling([sx, sy, sz]: [f32; 3]) -> Self {
         Self([
             //
@@ -301,8 +320,7 @@ where
         // ALLOCATE AND INIT VERTEX BUFFER
         println!("Memory types: {:#?}", memory_types);
 
-        const QUAD_BUF_STRIDE: usize = mem::size_of::<VertexData>();
-        const QUAD_BUF_BYTES: usize = vert_data_consts::QUAD.len() * QUAD_BUF_STRIDE;
+        const QUAD_BUF_BYTES: usize = vert_data_consts::QUAD.len() * mem::size_of::<VertexData>();
         assert_ne!(QUAD_BUF_BYTES, 0);
         let mut vertex_buffer = unsafe {
             device.create_buffer(
@@ -341,7 +359,7 @@ where
 
         //////////////////
 
-        const MAX_INSTANCES: usize = 6;
+        const MAX_INSTANCES: usize = 4;
         let mut instance_buffer = unsafe {
             device.create_buffer(
                 padded_len(
@@ -357,18 +375,36 @@ where
             let memory = device.allocate_memory(upload_type, instance_buffer_req.size).unwrap();
             device.bind_buffer_memory(&memory, 0, &mut instance_buffer).unwrap();
             let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
-            let instances: &[InstanceData] = &[
-                //
-                InstanceData { trans: TransMat4::translation([0., 0., 0.]) },
-                InstanceData { trans: TransMat4::translation([0.1, 0.2, 0.1]) },
-                InstanceData { trans: TransMat4::translation([0.2, 0.4, 0.]) },
-                InstanceData { trans: TransMat4::translation([0.3, 0.6, 0.1]) },
-            ];
-            ptr::copy_nonoverlapping(
-                instances.as_ptr() as *const u8,
-                mapping,
-                MAX_INSTANCES * mem::size_of::<InstanceData>(),
-            );
+            let typed_mapping: &mut [InstanceData; MAX_INSTANCES] = mem::transmute(mapping);
+            // let sample_distribution = rand::distributions::uniform::Uniform::new(0., 1.);
+            // let mut rng = rand::thread_rng();
+            let scaling = TransMat4::scaling([0.2; 3]);
+            typed_mapping[0].trans = TransMat4::translation([0.0, 0.0, 0.]).dot(&scaling);
+            typed_mapping[1].trans = TransMat4::translation([0.3, 0.0, 0.]).dot(&scaling);
+            typed_mapping[2].trans = TransMat4::translation([0.0, 0.3, 0.]).dot(&scaling);
+            typed_mapping[3].trans = TransMat4::translation([0.3, 0.3, 0.]).dot(&scaling);
+            // for uninit_instance in typed_mapping.iter_mut() {
+            //     use rand::Rng;
+            //     let x: f32 = rng.sample(&sample_distribution) - 0.5;
+            //     let y: f32 = rng.sample(&sample_distribution) - 0.5;
+            //     const SCALE: f32 = 0.02;
+            //     let angle: f32 = rng.sample(&sample_distribution) * std::f32::consts::PI * 2.;
+            //     uninit_instance.trans = TransMat4::scaling([SCALE; 3])
+            //         .dot(&TransMat4::rotation_z(angle))
+            //         .dot(&TransMat4::translation([x / SCALE, y / SCALE, 0.]));
+            // }
+            // let instances: &[InstanceData] = &[
+            //     //
+            //     InstanceData { trans: TransMat4::translation([0., 0., 0.]) },
+            //     InstanceData { trans: TransMat4::translation([0.1, 0.2, 0.1]) },
+            //     InstanceData { trans: TransMat4::translation([0.2, 0.4, 0.]) },
+            //     InstanceData { trans: TransMat4::translation([0.3, 0.6, 0.1]) },
+            // ];
+            // ptr::copy_nonoverlapping(
+            //     instances.as_ptr() as *const u8,
+            //     mapping,
+            //     MAX_INSTANCES * mem::size_of::<InstanceData>(),
+            // );
             device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
             device.unmap_memory(&memory);
             memory
@@ -792,7 +828,8 @@ where
                 &inner.pipeline_layout,
                 ShaderStageFlags::VERTEX,
                 0,
-                TransMat4::scaling([0.5, 0.5, 0.5]).as_u32_slice(),
+                TransMat4::rotation_z((self.frame % 300) as f32 / 300. * std::f32::consts::PI * 2.)
+                    .as_u32_slice(),
             );
             inner.cmd_buffer.draw(0..6, 0..4);
             inner.cmd_buffer.end_render_pass();
