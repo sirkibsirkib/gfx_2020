@@ -64,7 +64,7 @@ const ENTRY_NAME: &str = "main";
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 #[allow(non_snake_case)]
-struct Vertex {
+struct VertexData {
     // 4*2*2-16 bytes
     a_Pos: [f32; 2], // on screen
     a_Uv: [f32; 2],  // in texture
@@ -74,7 +74,6 @@ struct Vertex {
 #[derive(Debug, Clone, Copy)]
 #[allow(non_snake_case)]
 struct InstanceData {
-    // 4*4*4=64 bytes
     trans: TransMat4,
     // tex_scissor: Rect,
 }
@@ -82,40 +81,18 @@ struct InstanceData {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 struct Rect {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+    top_left: [f32; 2],
+    size: [f32; 2],
 }
 
-const PIC_X: f32 = 1.;
-const PIC_Y: f32 = 1.;
-const QUAD: [Vertex; 6] = [
-    Vertex {
-        a_Pos: [-PIC_X, PIC_Y], // A
-        a_Uv: [0.0, 1.0],
-    },
-    Vertex {
-        a_Pos: [PIC_X, PIC_Y], // B
-        a_Uv: [1.0, 1.0],
-    },
-    Vertex {
-        a_Pos: [PIC_X, -PIC_Y], // C
-        a_Uv: [1.0, 0.0],
-    },
-    Vertex {
-        a_Pos: [-PIC_X, PIC_Y], // A
-        a_Uv: [0.0, 1.0],
-    },
-    Vertex {
-        a_Pos: [PIC_X, -PIC_Y], // C
-        a_Uv: [1.0, 0.0],
-    },
-    Vertex {
-        a_Pos: [-PIC_X, -PIC_Y], // D
-        a_Uv: [0.0, 0.0],
-    },
-];
+mod vert_data_consts {
+    use super::VertexData;
+    const TL: VertexData = VertexData { a_Pos: [-1., -1.], a_Uv: [0.0, 0.0] };
+    const TR: VertexData = VertexData { a_Pos: [1., -1.], a_Uv: [1.0, 0.0] };
+    const BR: VertexData = VertexData { a_Pos: [1., 1.], a_Uv: [1.0, 1.0] };
+    const BL: VertexData = VertexData { a_Pos: [-1., 1.], a_Uv: [0.0, 1.0] };
+    pub(crate) const QUAD: [VertexData; 6] = [TL, TR, BR, BR, BL, TL];
+}
 
 fn main() {
     let event_loop = winit::event_loop::EventLoop::new();
@@ -324,8 +301,8 @@ where
         // ALLOCATE AND INIT VERTEX BUFFER
         println!("Memory types: {:#?}", memory_types);
 
-        const QUAD_BUF_STRIDE: usize = mem::size_of::<Vertex>();
-        const QUAD_BUF_BYTES: usize = QUAD.len() * QUAD_BUF_STRIDE;
+        const QUAD_BUF_STRIDE: usize = mem::size_of::<VertexData>();
+        const QUAD_BUF_BYTES: usize = vert_data_consts::QUAD.len() * QUAD_BUF_STRIDE;
         assert_ne!(QUAD_BUF_BYTES, 0);
         let mut vertex_buffer = unsafe {
             device.create_buffer(
@@ -352,7 +329,11 @@ where
             let memory = device.allocate_memory(upload_type, vertex_buffer_req.size).unwrap();
             device.bind_buffer_memory(&memory, 0, &mut vertex_buffer).unwrap();
             let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
-            ptr::copy_nonoverlapping(QUAD.as_ptr() as *const u8, mapping, QUAD_BUF_BYTES);
+            ptr::copy_nonoverlapping(
+                vert_data_consts::QUAD.as_ptr() as *const u8,
+                mapping,
+                QUAD_BUF_BYTES,
+            );
             device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
             device.unmap_memory(&memory);
             memory
@@ -618,7 +599,7 @@ where
                 let buffers = &[
                     pso::VertexBufferDesc {
                         binding: 0,
-                        stride: mem::size_of::<Vertex>() as u32,
+                        stride: mem::size_of::<VertexData>() as u32,
                         rate: VertexInputRate::Vertex,
                     },
                     pso::VertexBufferDesc {
@@ -627,38 +608,30 @@ where
                         rate: VertexInputRate::Instance(1),
                     },
                 ];
-                let attributes = &[
-                    pso::AttributeDesc {
-                        location: 2,
-                        binding: 1,
-                        element: pso::Element { format: f::Format::Rgba32Sfloat, offset: 0 },
-                    },
-                    pso::AttributeDesc {
-                        location: 3,
-                        binding: 1,
-                        element: pso::Element { format: f::Format::Rgba32Sfloat, offset: 16 },
-                    },
-                    pso::AttributeDesc {
-                        location: 4,
-                        binding: 1,
-                        element: pso::Element { format: f::Format::Rgba32Sfloat, offset: 32 },
-                    },
-                    pso::AttributeDesc {
-                        location: 5,
-                        binding: 1,
-                        element: pso::Element { format: f::Format::Rgba32Sfloat, offset: 48 },
-                    },
-                    pso::AttributeDesc {
-                        location: 0,
-                        binding: 0,
-                        element: pso::Element { format: f::Format::Rg32Sfloat, offset: 0 },
-                    },
-                    pso::AttributeDesc {
-                        location: 1,
-                        binding: 0,
-                        element: pso::Element { format: f::Format::Rg32Sfloat, offset: 8 },
-                    },
-                ];
+                let attributes = &{
+                    let mut attributes = vec![];
+                    for i in 0..2 {
+                        attributes.push(pso::AttributeDesc {
+                            location: i,
+                            binding: 0,
+                            element: pso::Element {
+                                format: f::Format::Rg32Sfloat,
+                                offset: i * mem::size_of::<[f32; 2]>() as u32,
+                            },
+                        });
+                    }
+                    for i in 0..4 {
+                        attributes.push(pso::AttributeDesc {
+                            location: i + 2,
+                            binding: 1,
+                            element: pso::Element {
+                                format: f::Format::Rgba32Sfloat,
+                                offset: i * mem::size_of::<[f32; 4]>() as u32,
+                            },
+                        });
+                    }
+                    attributes
+                };
                 let mut pipeline_desc = pso::GraphicsPipelineDesc::new(
                     pso::PrimitiveAssemblerDesc::Vertex {
                         buffers,
