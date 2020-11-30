@@ -191,16 +191,16 @@ fn main() {
                         *control_flow = winit::event_loop::ControlFlow::Exit
                     }
                     Some(winit::event::VirtualKeyCode::W) => {
-                        renderer.entity.pos[0] += 0.001;
+                        renderer.entity.pos[1] += 0.01;
                     }
                     Some(winit::event::VirtualKeyCode::S) => {
-                        renderer.entity.pos[0] -= 0.001;
+                        renderer.entity.pos[1] -= 0.01;
                     }
                     Some(winit::event::VirtualKeyCode::A) => {
-                        renderer.entity.pos[1] -= 0.001;
+                        renderer.entity.pos[0] -= 0.01;
                     }
                     Some(winit::event::VirtualKeyCode::D) => {
-                        renderer.entity.pos[1] += 0.001;
+                        renderer.entity.pos[0] += 0.01;
                     }
                     _ => {}
                 },
@@ -219,10 +219,8 @@ fn main() {
                 _ => {}
             },
             winit::event::Event::DeviceEvent { event, .. } => match event {
-                winit::event::DeviceEvent::MouseMotion { delta: (x, y) } => {
-                    const MUL: f32 = 0.0001;
-                    renderer.entity.pos[0] -= MUL * x as f32;
-                    renderer.entity.pos[1] -= MUL * y as f32;
+                winit::event::DeviceEvent::MouseMotion { delta: (x, _y) } => {
+                    renderer.entity.rot += 0.001 * x as f32;
                     window
                         .set_cursor_position(winit::dpi::Position::Logical(
                             winit::dpi::LogicalPosition { x: 400., y: 400. },
@@ -453,7 +451,7 @@ where
                 for j in 0..4 {
                     let idx = j * 4 + i;
                     let [x, y] = [i as f32 * 0.2, j as f32 * 0.2];
-                    let trans = glam::Mat4::from_translation([x, y, x].into())
+                    let trans = glam::Mat4::from_translation([x, y, 0.1].into())
                         * glam::Mat4::from_scale([0.1, 0.1, 0.1].into());
                     typed_mapping[idx] = InstanceData {
                         trans: trans.into(),
@@ -826,7 +824,7 @@ where
                 cmd_pool,
                 cmd_buffer,
             }),
-            entity: Entity::default(),
+            entity: Entity { pos: [0., 0., 0.], rot: 0. },
         };
         println!("{:#?}", &me);
         me
@@ -932,10 +930,16 @@ where
                 ShaderStageFlags::VERTEX,
                 0,
                 ColMatData::from({
-                    //
-                    glam::Mat4::perspective_rh(1., 1., 0., 1.)
-                        * glam::Mat4::from_translation(self.entity.pos.into())
-                        * glam::Mat4::from_rotation_z(self.entity.rot)
+                    glam::Mat4::perspective_rh(1.4, 1., 0., 1.)
+                        * glam::Mat4::look_at_rh(
+                            [0., -1., 0.].into(),   // eye. looking toward +y
+                            self.entity.pos.into(), // center.
+                            [0., 0., 1.].into(),    // up
+                        )
+                    // * glam::Mat4::from_translation(self.entity.pos.into())
+                    // * glam::Mat4::from_rotation_z(self.entity.rot)
+                    // * glam::Mat4::from_rotation_x(std::f32::consts::PI / 2.)
+                    // look up from the floor
                 })
                 .as_u32_slice(),
             );
