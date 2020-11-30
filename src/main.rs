@@ -623,53 +623,47 @@ where
                 stencil_ops: pass::AttachmentOps::DONT_CARE,
                 layouts: i::Layout::Undefined..i::Layout::Present,
             };
-            let depth_attachment = pass::Attachment {
-                format: Some(f::Format::D32Sfloat),
-                samples: 1,
-                ops: pass::AttachmentOps::new(
-                    pass::AttachmentLoadOp::Clear,
-                    pass::AttachmentStoreOp::DontCare,
-                ),
-                stencil_ops: pass::AttachmentOps::DONT_CARE,
-                layouts: i::Layout::Undefined..i::Layout::DepthStencilAttachmentOptimal,
-            };
+            // let depth_attachment = pass::Attachment {
+            //     format: Some(f::Format::D32Sfloat),
+            //     samples: 1,
+            //     ops: pass::AttachmentOps::new(
+            //         pass::AttachmentLoadOp::Clear,
+            //         pass::AttachmentStoreOp::DontCare,
+            //     ),
+            //     stencil_ops: pass::AttachmentOps::DONT_CARE,
+            //     layouts: i::Layout::Undefined..i::Layout::DepthStencilAttachmentOptimal,
+            // };
             let subpass = pass::SubpassDesc {
                 colors: &[(0, i::Layout::ColorAttachmentOptimal)],
-                depth_stencil: Some(&(1, i::Layout::DepthStencilAttachmentOptimal)),
+                depth_stencil: None, //Some(&(1, i::Layout::DepthStencilAttachmentOptimal)),
                 inputs: &[],
                 resolves: &[],
                 preserves: &[],
             };
-            let in_dependency = pass::SubpassDependency {
-                passes: None..Some(0),
-                stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT
-                    ..PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS,
-                accesses: i::Access::empty()
-                    ..(i::Access::COLOR_ATTACHMENT_READ
-                        | i::Access::COLOR_ATTACHMENT_WRITE
-                        | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
-                        | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
-                flags: m::Dependencies::empty(),
-            };
-            let out_dependency = pass::SubpassDependency {
-                passes: Some(0)..None,
-                stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS
-                    ..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
-                accesses: i::Access::empty()
-                    ..(i::Access::COLOR_ATTACHMENT_READ
-                        | i::Access::COLOR_ATTACHMENT_WRITE
-                        | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
-                        | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
-                flags: m::Dependencies::empty(),
-            };
-            unsafe {
-                device.create_render_pass(
-                    &[attachment],
-                    &[subpass],
-                    &[in_dependency, out_dependency],
-                )
-            }
-            .expect("Can't create render pass")
+            // let in_dependency = pass::SubpassDependency {
+            //     passes: None..Some(0),
+            //     stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT
+            //         ..PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS,
+            //     accesses: i::Access::empty()
+            //         ..(i::Access::COLOR_ATTACHMENT_READ
+            //             | i::Access::COLOR_ATTACHMENT_WRITE
+            //             | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
+            //             | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
+            //     flags: m::Dependencies::empty(),
+            // };
+            // let out_dependency = pass::SubpassDependency {
+            //     passes: Some(0)..None,
+            //     stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS
+            //         ..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
+            //     accesses: i::Access::empty()
+            //         ..(i::Access::COLOR_ATTACHMENT_READ
+            //             | i::Access::COLOR_ATTACHMENT_WRITE
+            //             | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
+            //             | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
+            //     flags: m::Dependencies::empty(),
+            // };
+            unsafe { device.create_render_pass(&[attachment], &[subpass], &[]) }
+                .expect("Can't create render pass")
         };
 
         let semaphore = device.create_semaphore().expect("Could not create semaphore");
@@ -920,9 +914,9 @@ where
                     command::ClearValue {
                         color: command::ClearColor { float32: [0., 0., 0., 1.0] },
                     },
-                    command::ClearValue {
-                        depth_stencil: command::ClearDepthStencil { depth: 1., stencil: 0 },
-                    },
+                    // command::ClearValue {
+                    //     depth_stencil: command::ClearDepthStencil { depth: 1., stencil: 0 },
+                    // },
                 ],
                 command::SubpassContents::Inline,
             );
