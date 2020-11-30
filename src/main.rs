@@ -15,9 +15,10 @@ use gfx_hal::{
     queue::{QueueGroup, Submission},
     window,
 };
-
+use glam::Mat4;
 use std::{
     borrow::Borrow,
+    f32::consts::PI,
     io::Cursor,
     iter,
     mem::{self, ManuallyDrop},
@@ -27,8 +28,8 @@ use std::{
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct ColMatData([f32; 16]);
-impl From<glam::Mat4> for ColMatData {
-    fn from(m: glam::Mat4) -> Self {
+impl From<Mat4> for ColMatData {
+    fn from(m: Mat4) -> Self {
         Self(*m.as_ref())
     }
 }
@@ -39,61 +40,7 @@ impl ColMatData {
     }
 }
 
-const NUM_INSTANCES: u32 = 16;
-
-// impl ColMatData {
-//     const BYTES: usize = std::mem::size_of::<Self>();
-//     fn row(&self, i: usize) -> [f32; 4] {
-//         (self.0)[i]
-//     }
-//     fn col(&self, i: usize) -> [f32; 4] {
-//         let a = self.0;
-//         [a[0][i], a[1][i], a[2][i], a[3][i]]
-//     }
-//     fn dot(&self, other: &Self) -> Self {
-//         fn vec4_dot(a: [f32; 4], b: [f32; 4]) -> f32 {
-//             a.iter().zip(b.iter()).fold(0., |acc, (&a, &b)| acc + a * b)
-//         }
-//         let mut x = [[0.; 4]; 4];
-//         for i in 0..4 {
-//             for j in 0..4 {
-//                 x[i][j] = vec4_dot(self.row(i), other.col(j));
-//             }
-//         }
-//         Self(x)
-//     }
-//     fn scaling([sx, sy, sz]: [f32; 3]) -> Self {
-//         Self([
-//             //
-//             [sx, 0., 0., 0.],
-//             [0., sy, 0., 0.],
-//             [0., 0., sz, 0.],
-//             [0., 0., 0., 1.],
-//         ])
-//     }
-//     fn translation([tx, ty, tz]: [f32; 3]) -> Self {
-//         Self([
-//             //
-//             [1., 0., 0., tx],
-//             [0., 1., 0., ty],
-//             [0., 0., 1., tz],
-//             [0., 0., 0., 1.],
-//         ])
-//     }
-//     fn rotation_z(angle: f32) -> Self {
-//         Self([
-//             [angle.cos(), -angle.sin(), 0., 0.],
-//             [angle.sin(), angle.cos(), 0., 0.],
-//             [0., 0., 1., 0.],
-//             [0., 0., 0., 1.],
-//         ])
-//     }
-//     fn as_u32_slice(&self) -> &[u32] {
-//         let x: &[u32; Self::BYTES / 4] = unsafe { std::mem::transmute(self) };
-//         x
-//     }
-// }
-
+const NUM_INSTANCES: u32 = 25;
 mod want;
 
 const DIMS: window::Extent2D = window::Extent2D { width: 800, height: 800 };
@@ -116,12 +63,6 @@ struct InstanceData {
     trans: ColMatData,
     tex_scissor: Rect,
 }
-// impl InstanceData {
-//     fn slice_to_u8_slice(slice: &[Self]) -> &[u8] {
-//         let (ptr, len) = (slice.as_ptr(), slice.len());
-//         unsafe { std::slice::from_raw_parts(ptr as _, len * mem::size_of::<InstanceData>()) }
-//     }
-// }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -177,7 +118,7 @@ fn main() {
     event_loop.run(move |event, _, control_flow| {
         println!("{:?}", event);
         *control_flow = winit::event_loop::ControlFlow::Wait;
-
+        const MOV_DIST: f32 = 0.1;
         match event {
             winit::event::Event::WindowEvent { event, .. } => match event {
                 winit::event::WindowEvent::CloseRequested => {
@@ -191,16 +132,16 @@ fn main() {
                         *control_flow = winit::event_loop::ControlFlow::Exit
                     }
                     Some(winit::event::VirtualKeyCode::W) => {
-                        renderer.entity.pos[1] += 0.01;
+                        renderer.entity.move_relative(0., MOV_DIST);
                     }
                     Some(winit::event::VirtualKeyCode::S) => {
-                        renderer.entity.pos[1] -= 0.01;
+                        renderer.entity.move_relative(PI, MOV_DIST);
                     }
                     Some(winit::event::VirtualKeyCode::A) => {
-                        renderer.entity.pos[0] -= 0.01;
+                        renderer.entity.move_relative(PI / 2., MOV_DIST);
                     }
                     Some(winit::event::VirtualKeyCode::D) => {
-                        renderer.entity.pos[0] += 0.01;
+                        renderer.entity.move_relative(PI * 3. / 2., MOV_DIST);
                     }
                     _ => {}
                 },
@@ -220,7 +161,7 @@ fn main() {
             },
             winit::event::Event::DeviceEvent { event, .. } => match event {
                 winit::event::DeviceEvent::MouseMotion { delta: (x, _y) } => {
-                    renderer.entity.rot += 0.001 * x as f32;
+                    renderer.entity.rot -= 0.001 * x as f32;
                     window
                         .set_cursor_position(winit::dpi::Position::Logical(
                             winit::dpi::LogicalPosition { x: 400., y: 400. },
@@ -256,6 +197,13 @@ struct Entity {
     pos: [f32; 3],
     rot: f32,
 }
+impl Entity {
+    fn move_relative(&mut self, x_angle_relative: f32, distance: f32) {
+        let angle = self.rot + x_angle_relative;
+        self.pos[0] -= angle.sin() * distance;
+        self.pos[1] += angle.cos() * distance;
+    }
+}
 
 /// Things that must be manually dropped, because they correspond to Gfx resources
 #[derive(DebugStub)]
@@ -282,6 +230,9 @@ struct RendererInner<B: hal::Backend> {
     image_memory: B::Memory,
     image_upload_memory: B::Memory,
     sampler: B::Sampler,
+    depth_image: B::Image,
+    depth_memory: B::Memory,
+    depth_image_view: B::ImageView,
 }
 
 const fn padded_len(n: usize, non_coherent_atom_size: usize) -> usize {
@@ -318,14 +269,6 @@ where
             };
             (gpu.queue_groups.pop().unwrap(), gpu.device)
         };
-
-        // PSO: list of stages TODO
-        // command queue: list of pools: list of commands(tasks?):
-        // 1 task is an enum: one variant can refer to a PSO
-        // ----
-        // creating/destroying PSOs is expensive
-        // appending commands/tasks is cheap
-
         // Setup renderpass and pipeline
         let set_layout = unsafe {
             // arugments that are passed to fragment function
@@ -447,40 +390,19 @@ where
             let typed_mapping: &mut [InstanceData; MAX_INSTANCES] = mem::transmute(mapping);
             // let sample_distribution = rand::distributions::uniform::Uniform::new(0., 1.);
             // let mut rng = rand::thread_rng();
-            for i in 0..4 {
-                for j in 0..4 {
-                    let idx = j * 4 + i;
-                    let [x, y] = [i as f32 * 0.2, j as f32 * 0.2];
-                    let trans = glam::Mat4::from_translation([x, y, 0.1].into())
-                        * glam::Mat4::from_scale([0.1, 0.1, 0.1].into());
-                    typed_mapping[idx] = InstanceData {
-                        trans: trans.into(),
-                        tex_scissor: Rect { top_left: [i as f32 * 0.2 + 0.2, 0.0], size: [0.2; 2] },
-                    };
+            for (i, instance_data) in typed_mapping.iter_mut().enumerate() {
+                println!("{:?}", i);
+                let [x, y] = [i % 5, i / 5];
+                let fit = |n| n as f32 / 5.;
+                let [x, y] = [fit(x), fit(y)];
+
+                let trans = { Mat4::from_translation([x, y, y].into()) };
+                let scale = Mat4::from_scale([0.4; 3].into());
+                *instance_data = InstanceData {
+                    trans: (trans * scale).into(),
+                    tex_scissor: Rect { top_left: [0.0, 0.2], size: [0.2; 2] },
                 }
             }
-            // for uninit_instance in typed_mapping.iter_mut() {
-            //     use rand::Rng;
-            //     let x: f32 = rng.sample(&sample_distribution) - 0.5;
-            //     let y: f32 = rng.sample(&sample_distribution) - 0.5;
-            //     const SCALE: f32 = 0.02;
-            //     let angle: f32 = rng.sample(&sample_distribution) * std::f32::consts::PI * 2.;
-            //     uninit_instance.trans = ColMatData::scaling([SCALE; 3])
-            //         .dot(&ColMatData::rotation_z(angle))
-            //         .dot(&ColMatData::translation([x / SCALE, y / SCALE, 0.]));
-            // }
-            // let instances: &[InstanceData] = &[
-            //     //
-            //     InstanceData { trans: ColMatData::translation([0., 0., 0.]) },
-            //     InstanceData { trans: ColMatData::translation([0.1, 0.2, 0.1]) },
-            //     InstanceData { trans: ColMatData::translation([0.2, 0.4, 0.]) },
-            //     InstanceData { trans: ColMatData::translation([0.3, 0.6, 0.1]) },
-            // ];
-            // ptr::copy_nonoverlapping(
-            //     instances.as_ptr() as *const u8,
-            //     mapping,
-            //     MAX_INSTANCES * mem::size_of::<InstanceData>(),
-            // );
             device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
             device.unmap_memory(&memory);
             memory
@@ -628,6 +550,49 @@ where
             device.wait_for_fence(&fence, !0).expect("Can't wait for fence");
         }
 
+        /////////// DEPTH
+
+        let mut depth_image = unsafe {
+            device.create_image(
+                i::Kind::D2(width as i::Size, height as i::Size, 1, 1),
+                1,
+                f::Format::D32Sfloat,
+                i::Tiling::Optimal,
+                i::Usage::DEPTH_STENCIL_ATTACHMENT,
+                i::ViewCapabilities::empty(),
+            )
+        }
+        .unwrap();
+
+        let depth_requirements = unsafe { device.get_image_requirements(&depth_image) };
+        let depth_image_type = memory_types
+            .iter()
+            .enumerate()
+            .position(|(id, mem_type)| {
+                // type_mask is a bit field where each bit represents a memory type. If the bit is set
+                // to 1 it means we can use that type for our buffer. So this code finds the first
+                // memory type that has a `1` (or, is allowed), and is visible to the CPU.
+                depth_requirements.type_mask & (1 << id) != 0
+                    && mem_type.properties.contains(m::Properties::DEVICE_LOCAL)
+            })
+            .unwrap()
+            .into();
+        let depth_memory =
+            unsafe { device.allocate_memory(depth_image_type, depth_requirements.size) }.unwrap();
+        unsafe { device.bind_image_memory(&depth_memory, 0, &mut depth_image) }.unwrap();
+        let depth_image_view = unsafe {
+            device.create_image_view(
+                &depth_image,
+                gfx_hal::image::ViewKind::D2,
+                f::Format::D32Sfloat,
+                gfx_hal::format::Swizzle::NO,
+                i::SubresourceRange { aspects: f::Aspects::DEPTH, ..Default::default() },
+            )
+        }
+        .unwrap();
+
+        ///////////
+
         let caps = surface.capabilities(&adapter.physical_device);
         let formats = surface.supported_formats(&adapter.physical_device);
         println!("formats: {:?}", formats);
@@ -658,15 +623,53 @@ where
                 stencil_ops: pass::AttachmentOps::DONT_CARE,
                 layouts: i::Layout::Undefined..i::Layout::Present,
             };
+            let depth_attachment = pass::Attachment {
+                format: Some(f::Format::D32Sfloat),
+                samples: 1,
+                ops: pass::AttachmentOps::new(
+                    pass::AttachmentLoadOp::Clear,
+                    pass::AttachmentStoreOp::DontCare,
+                ),
+                stencil_ops: pass::AttachmentOps::DONT_CARE,
+                layouts: i::Layout::Undefined..i::Layout::DepthStencilAttachmentOptimal,
+            };
             let subpass = pass::SubpassDesc {
                 colors: &[(0, i::Layout::ColorAttachmentOptimal)],
-                depth_stencil: None,
+                depth_stencil: Some(&(1, i::Layout::DepthStencilAttachmentOptimal)),
                 inputs: &[],
                 resolves: &[],
                 preserves: &[],
             };
-            unsafe { device.create_render_pass(&[attachment], &[subpass], &[]) }
-                .expect("Can't create render pass")
+            let in_dependency = pass::SubpassDependency {
+                passes: None..Some(0),
+                stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT
+                    ..PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS,
+                accesses: i::Access::empty()
+                    ..(i::Access::COLOR_ATTACHMENT_READ
+                        | i::Access::COLOR_ATTACHMENT_WRITE
+                        | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
+                        | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
+                flags: m::Dependencies::empty(),
+            };
+            let out_dependency = pass::SubpassDependency {
+                passes: Some(0)..None,
+                stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS
+                    ..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
+                accesses: i::Access::empty()
+                    ..(i::Access::COLOR_ATTACHMENT_READ
+                        | i::Access::COLOR_ATTACHMENT_WRITE
+                        | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
+                        | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
+                flags: m::Dependencies::empty(),
+            };
+            unsafe {
+                device.create_render_pass(
+                    &[attachment],
+                    &[subpass],
+                    &[in_dependency, out_dependency],
+                )
+            }
+            .expect("Can't create render pass")
         };
 
         let semaphore = device.create_semaphore().expect("Could not create semaphore");
@@ -696,7 +699,6 @@ where
                         .unwrap();
                 unsafe { device.create_shader_module(&spirv) }.unwrap()
             };
-
             let pipeline = {
                 let vs_entry = pso::EntryPoint {
                     entry: ENTRY_NAME,
@@ -773,7 +775,11 @@ where
                     &pipeline_layout,
                     Subpass { index: 0, main_pass: &render_pass },
                 );
-                // TODO set pipeline_desc.depth_stencil
+                pipeline_desc.depth_stencil = pso::DepthStencilDesc {
+                    depth: Some(pso::DepthTest { fun: pso::Comparison::LessEqual, write: true }),
+                    depth_bounds: false,
+                    stencil: None,
+                };
                 pipeline_desc.blender.targets.push(pso::ColorBlendDesc {
                     mask: pso::ColorMask::ALL,
                     blend: Some(pso::BlendState::ALPHA),
@@ -823,6 +829,9 @@ where
                 fence,
                 cmd_pool,
                 cmd_buffer,
+                depth_image,
+                depth_memory,
+                depth_image_view,
             }),
             entity: Entity { pos: [0., 0., 0.], rot: 0. },
         };
@@ -849,6 +858,7 @@ where
     }
 
     fn render(&mut self) {
+        println!("entity {:#?}", &self.entity);
         let inner = &mut *self.inner;
         let surface_image = unsafe {
             match inner.surface.acquire_image(!0) {
@@ -906,40 +916,35 @@ where
                 &inner.render_pass,
                 &framebuffer,
                 self.viewport.rect,
-                &[command::ClearValue {
-                    color: command::ClearColor { float32: [0., 0., 0., 1.0] },
-                }],
+                &[
+                    command::ClearValue {
+                        color: command::ClearColor { float32: [0., 0., 0., 1.0] },
+                    },
+                    command::ClearValue {
+                        depth_stencil: command::ClearDepthStencil { depth: 1., stencil: 0 },
+                    },
+                ],
                 command::SubpassContents::Inline,
             );
-            // {
-            //     let mapping =
-            //         self.device.map_memory(&inner.instance_buffer_memory, m::Segment::ALL).unwrap();
-            //     let typed_mapping: &mut [InstanceData; 2] = mem::transmute(mapping);
-            //     // let sample_distribution = rand::distributions::uniform::Uniform::new(0., 1.);
-            //     // let mut rng = rand::thread_rng();
-            //     let scaling = glam::Mat4::from_scale([0.1, 0.1, 0.1].into());
-            //     typed_mapping[0] = InstanceData {
-            //         trans: (glam::Mat4::from_translation([0.0, animation_progress, 0.0].into())
-            //             * scaling)
-            //             .into(),
-            //         tex_scissor: Rect { top_left: [0.8, 0.0], size: [0.2; 2] },
-            //     };
-            // }
             inner.cmd_buffer.push_graphics_constants(
                 &inner.pipeline_layout,
                 ShaderStageFlags::VERTEX,
                 0,
                 ColMatData::from({
-                    glam::Mat4::perspective_rh(1.4, 1., 0., 1.)
-                        * glam::Mat4::look_at_rh(
-                            [0., -1., 0.].into(),   // eye. looking toward +y
-                            self.entity.pos.into(), // center.
-                            [0., 0., 1.].into(),    // up
-                        )
-                    // * glam::Mat4::from_translation(self.entity.pos.into())
-                    // * glam::Mat4::from_rotation_z(self.entity.rot)
-                    // * glam::Mat4::from_rotation_x(std::f32::consts::PI / 2.)
-                    // look up from the floor
+                    // let persp = Mat4::perspective_infinite_rh(1., 1., 0.);
+                    // let view = {
+                    //     let center = self.entity.pos.into();
+                    //     let up = [0., 0., 1.].into();
+                    //     let eye = [
+                    //         self.entity.rot.cos(), // to +x when ros is zero
+                    //         self.entity.rot.sin(), // to
+                    //         0.,
+                    //     ]
+                    //     .into();
+                    //     Mat4::look_at_rh(eye, center, up)
+                    // };
+                    // Mat4::from_scale([0.1, 0.1, 0.1].into())
+                    Mat4::identity()
                 })
                 .as_u32_slice(),
             );
@@ -980,7 +985,9 @@ where
             self.device.destroy_buffer(inner.instance_buffer);
             self.device.destroy_buffer(inner.image_upload_buffer);
             self.device.destroy_image(inner.image_logo);
+            self.device.destroy_image(inner.depth_image);
             self.device.destroy_image_view(inner.image_view);
+            self.device.destroy_image_view(inner.depth_image_view);
             self.device.destroy_sampler(inner.sampler);
             self.device.destroy_command_pool(inner.cmd_pool);
             self.device.destroy_semaphore(inner.semaphore);
@@ -990,6 +997,7 @@ where
             self.device.free_memory(inner.vertex_buffer_memory);
             self.device.free_memory(inner.instance_buffer_memory);
             self.device.free_memory(inner.image_memory);
+            self.device.free_memory(inner.depth_memory);
             self.device.free_memory(inner.image_upload_memory);
             self.device.destroy_graphics_pipeline(inner.pipeline);
             self.device.destroy_pipeline_layout(inner.pipeline_layout);
