@@ -26,63 +26,77 @@ use std::{
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-struct TransMat4([[f32; 4]; 4]);
-impl TransMat4 {
-    const BYTES: usize = std::mem::size_of::<Self>();
-    fn row(&self, i: usize) -> [f32; 4] {
-        (self.0)[i]
+struct ColMatData([f32; 16]);
+impl From<glam::Mat4> for ColMatData {
+    fn from(m: glam::Mat4) -> Self {
+        Self(*m.as_ref())
     }
-    fn col(&self, i: usize) -> [f32; 4] {
-        let a = self.0;
-        [a[0][i], a[1][i], a[2][i], a[3][i]]
-    }
-    fn dot(&self, other: &Self) -> Self {
-        fn vec4_dot(a: [f32; 4], b: [f32; 4]) -> f32 {
-            a.iter().zip(b.iter()).fold(0., |acc, (&a, &b)| acc + a * b)
-        }
-        let mut x = [[0.; 4]; 4];
-        for i in 0..4 {
-            for j in 0..4 {
-                x[i][j] = vec4_dot(self.row(i), other.col(j));
-            }
-        }
-        Self(x)
-    }
-    fn scaling([sx, sy, sz]: [f32; 3]) -> Self {
-        Self([
-            //
-            [sx, 0., 0., 0.],
-            [0., sy, 0., 0.],
-            [0., 0., sz, 0.],
-            [0., 0., 0., 1.],
-        ])
-    }
-    fn translation([tx, ty, tz]: [f32; 3]) -> Self {
-        Self([
-            //
-            [1., 0., 0., tx],
-            [0., 1., 0., ty],
-            [0., 0., 1., tz],
-            [0., 0., 0., 1.],
-        ])
-    }
-    fn rotation_z(angle: f32) -> Self {
-        Self([
-            [angle.cos(), -angle.sin(), 0., 0.],
-            [angle.sin(), angle.cos(), 0., 0.],
-            [0., 0., 1., 0.],
-            [0., 0., 0., 1.],
-        ])
-    }
-    fn as_u32_slice(&self) -> &[u32] {
-        let x: &[u32; Self::BYTES / 4] = unsafe { std::mem::transmute(self) };
-        x
+}
+impl ColMatData {
+    #[inline]
+    fn as_u32_slice(&self) -> &[u32; 16] {
+        unsafe { mem::transmute(&self.0) }
     }
 }
 
+const NUM_INSTANCES: u32 = 16;
+
+// impl ColMatData {
+//     const BYTES: usize = std::mem::size_of::<Self>();
+//     fn row(&self, i: usize) -> [f32; 4] {
+//         (self.0)[i]
+//     }
+//     fn col(&self, i: usize) -> [f32; 4] {
+//         let a = self.0;
+//         [a[0][i], a[1][i], a[2][i], a[3][i]]
+//     }
+//     fn dot(&self, other: &Self) -> Self {
+//         fn vec4_dot(a: [f32; 4], b: [f32; 4]) -> f32 {
+//             a.iter().zip(b.iter()).fold(0., |acc, (&a, &b)| acc + a * b)
+//         }
+//         let mut x = [[0.; 4]; 4];
+//         for i in 0..4 {
+//             for j in 0..4 {
+//                 x[i][j] = vec4_dot(self.row(i), other.col(j));
+//             }
+//         }
+//         Self(x)
+//     }
+//     fn scaling([sx, sy, sz]: [f32; 3]) -> Self {
+//         Self([
+//             //
+//             [sx, 0., 0., 0.],
+//             [0., sy, 0., 0.],
+//             [0., 0., sz, 0.],
+//             [0., 0., 0., 1.],
+//         ])
+//     }
+//     fn translation([tx, ty, tz]: [f32; 3]) -> Self {
+//         Self([
+//             //
+//             [1., 0., 0., tx],
+//             [0., 1., 0., ty],
+//             [0., 0., 1., tz],
+//             [0., 0., 0., 1.],
+//         ])
+//     }
+//     fn rotation_z(angle: f32) -> Self {
+//         Self([
+//             [angle.cos(), -angle.sin(), 0., 0.],
+//             [angle.sin(), angle.cos(), 0., 0.],
+//             [0., 0., 1., 0.],
+//             [0., 0., 0., 1.],
+//         ])
+//     }
+//     fn as_u32_slice(&self) -> &[u32] {
+//         let x: &[u32; Self::BYTES / 4] = unsafe { std::mem::transmute(self) };
+//         x
+//     }
+// }
+
 mod want;
 
-const DIMS: window::Extent2D = window::Extent2D { width: 1024, height: 768 };
+const DIMS: window::Extent2D = window::Extent2D { width: 800, height: 800 };
 
 const ENTRY_NAME: &str = "main";
 
@@ -99,9 +113,15 @@ struct VertexData {
 #[derive(Debug, Clone, Copy)]
 #[allow(non_snake_case)]
 struct InstanceData {
-    trans: TransMat4,
+    trans: ColMatData,
     tex_scissor: Rect,
 }
+// impl InstanceData {
+//     fn slice_to_u8_slice(slice: &[Self]) -> &[u8] {
+//         let (ptr, len) = (slice.as_ptr(), slice.len());
+//         unsafe { std::slice::from_raw_parts(ptr as _, len * mem::size_of::<InstanceData>()) }
+//     }
+// }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -117,10 +137,11 @@ impl Default for Rect {
 
 mod vert_data_consts {
     use super::VertexData;
-    const TL: VertexData = VertexData { a_Pos: [-1., -1.], a_Uv: [0.0, 0.0] };
-    const TR: VertexData = VertexData { a_Pos: [1., -1.], a_Uv: [1.0, 0.0] };
-    const BR: VertexData = VertexData { a_Pos: [1., 1.], a_Uv: [1.0, 1.0] };
-    const BL: VertexData = VertexData { a_Pos: [-1., 1.], a_Uv: [0.0, 1.0] };
+    const D: f32 = 0.5;
+    const TL: VertexData = VertexData { a_Pos: [-D, -D], a_Uv: [0.0, 0.0] };
+    const TR: VertexData = VertexData { a_Pos: [D, -D], a_Uv: [1.0, 0.0] };
+    const BR: VertexData = VertexData { a_Pos: [D, D], a_Uv: [1.0, 1.0] };
+    const BL: VertexData = VertexData { a_Pos: [-D, D], a_Uv: [0.0, 1.0] };
     pub(crate) const QUAD: [VertexData; 6] = [TL, TR, BR, BR, BL, TL];
 }
 
@@ -137,6 +158,7 @@ fn main() {
 
     // instantiate backend
     let window = wb.build(&event_loop).unwrap();
+    window.set_cursor_grab(true).unwrap();
     let instance = back::Instance::create("gfx-rs quad", 1).expect("Failed to create an instance!");
     let surface = unsafe { instance.create_surface(&window).expect("Failed to create a surface!") };
 
@@ -162,18 +184,50 @@ fn main() {
                     *control_flow = winit::event_loop::ControlFlow::Exit
                 }
                 winit::event::WindowEvent::KeyboardInput {
-                    input:
-                        winit::event::KeyboardInput {
-                            virtual_keycode: Some(winit::event::VirtualKeyCode::Escape),
-                            ..
-                        },
+                    input: winit::event::KeyboardInput { virtual_keycode, .. },
                     ..
-                } => *control_flow = winit::event_loop::ControlFlow::Exit,
+                } => match virtual_keycode {
+                    Some(winit::event::VirtualKeyCode::Escape) => {
+                        *control_flow = winit::event_loop::ControlFlow::Exit
+                    }
+                    Some(winit::event::VirtualKeyCode::W) => {
+                        renderer.entity.pos[0] += 0.001;
+                    }
+                    Some(winit::event::VirtualKeyCode::S) => {
+                        renderer.entity.pos[0] -= 0.001;
+                    }
+                    Some(winit::event::VirtualKeyCode::A) => {
+                        renderer.entity.pos[1] -= 0.001;
+                    }
+                    Some(winit::event::VirtualKeyCode::D) => {
+                        renderer.entity.pos[1] += 0.001;
+                    }
+                    _ => {}
+                },
                 winit::event::WindowEvent::Resized(dims) => {
                     println!("resized to {:?}", dims);
                     renderer.dimensions =
                         window::Extent2D { width: dims.width, height: dims.height };
                     renderer.recreate_swapchain();
+                }
+                winit::event::WindowEvent::MouseWheel { delta, .. } => {
+                    if let winit::event::MouseScrollDelta::LineDelta(_x, y) = delta {
+                        const MUL: f32 = 0.03;
+                        renderer.entity.pos[2] += MUL * y;
+                    }
+                }
+                _ => {}
+            },
+            winit::event::Event::DeviceEvent { event, .. } => match event {
+                winit::event::DeviceEvent::MouseMotion { delta: (x, y) } => {
+                    const MUL: f32 = 0.0001;
+                    renderer.entity.pos[0] -= MUL * x as f32;
+                    renderer.entity.pos[1] -= MUL * y as f32;
+                    window
+                        .set_cursor_position(winit::dpi::Position::Logical(
+                            winit::dpi::LogicalPosition { x: 400., y: 400. },
+                        ))
+                        .unwrap();
                 }
                 _ => {}
             },
@@ -196,7 +250,13 @@ struct Renderer<B: hal::Backend> {
     viewport: pso::Viewport,
     desc_set: B::DescriptorSet,
     inner: ManuallyDrop<RendererInner<B>>,
-    frame: usize,
+    entity: Entity,
+}
+
+#[derive(Debug, Default)]
+struct Entity {
+    pos: [f32; 3],
+    rot: f32,
 }
 
 /// Things that must be manually dropped, because they correspond to Gfx resources
@@ -370,7 +430,7 @@ where
 
         //////////////////
 
-        const MAX_INSTANCES: usize = 4;
+        const MAX_INSTANCES: usize = NUM_INSTANCES as usize;
         let mut instance_buffer = unsafe {
             device.create_buffer(
                 padded_len(
@@ -389,31 +449,34 @@ where
             let typed_mapping: &mut [InstanceData; MAX_INSTANCES] = mem::transmute(mapping);
             // let sample_distribution = rand::distributions::uniform::Uniform::new(0., 1.);
             // let mut rng = rand::thread_rng();
-            let scaling = TransMat4::scaling([0.2; 3]);
-            for t in typed_mapping.iter_mut() {
-                t.tex_scissor = Rect { top_left: [0.; 2], size: [0.2; 2] };
+            for i in 0..4 {
+                for j in 0..4 {
+                    let idx = j * 4 + i;
+                    let [x, y] = [i as f32 * 0.2, j as f32 * 0.2];
+                    let trans = glam::Mat4::from_translation([x, y, x].into())
+                        * glam::Mat4::from_scale([0.1, 0.1, 0.1].into());
+                    typed_mapping[idx] = InstanceData {
+                        trans: trans.into(),
+                        tex_scissor: Rect { top_left: [i as f32 * 0.2 + 0.2, 0.0], size: [0.2; 2] },
+                    };
+                }
             }
-            typed_mapping[0].trans = TransMat4::translation([0.0, 0.0, 0.]).dot(&scaling);
-            typed_mapping[0].tex_scissor.top_left = [0.2, 0.];
-            typed_mapping[1].trans = TransMat4::translation([0.3, 0.0, 0.]).dot(&scaling);
-            typed_mapping[2].trans = TransMat4::translation([0.0, 0.3, 0.]).dot(&scaling);
-            typed_mapping[3].trans = TransMat4::translation([0.3, 0.3, 0.]).dot(&scaling);
             // for uninit_instance in typed_mapping.iter_mut() {
             //     use rand::Rng;
             //     let x: f32 = rng.sample(&sample_distribution) - 0.5;
             //     let y: f32 = rng.sample(&sample_distribution) - 0.5;
             //     const SCALE: f32 = 0.02;
             //     let angle: f32 = rng.sample(&sample_distribution) * std::f32::consts::PI * 2.;
-            //     uninit_instance.trans = TransMat4::scaling([SCALE; 3])
-            //         .dot(&TransMat4::rotation_z(angle))
-            //         .dot(&TransMat4::translation([x / SCALE, y / SCALE, 0.]));
+            //     uninit_instance.trans = ColMatData::scaling([SCALE; 3])
+            //         .dot(&ColMatData::rotation_z(angle))
+            //         .dot(&ColMatData::translation([x / SCALE, y / SCALE, 0.]));
             // }
             // let instances: &[InstanceData] = &[
             //     //
-            //     InstanceData { trans: TransMat4::translation([0., 0., 0.]) },
-            //     InstanceData { trans: TransMat4::translation([0.1, 0.2, 0.1]) },
-            //     InstanceData { trans: TransMat4::translation([0.2, 0.4, 0.]) },
-            //     InstanceData { trans: TransMat4::translation([0.3, 0.6, 0.1]) },
+            //     InstanceData { trans: ColMatData::translation([0., 0., 0.]) },
+            //     InstanceData { trans: ColMatData::translation([0.1, 0.2, 0.1]) },
+            //     InstanceData { trans: ColMatData::translation([0.2, 0.4, 0.]) },
+            //     InstanceData { trans: ColMatData::translation([0.3, 0.6, 0.1]) },
             // ];
             // ptr::copy_nonoverlapping(
             //     instances.as_ptr() as *const u8,
@@ -612,7 +675,7 @@ where
         let cmd_buffer = unsafe { cmd_pool.allocate_one(command::Level::Primary) };
 
         let pipeline_layout = {
-            let push_constant_bytes = TransMat4::BYTES as u32;
+            let push_constant_bytes = mem::size_of::<ColMatData>() as u32;
             unsafe {
                 device.create_pipeline_layout(
                     iter::once(&set_layout),
@@ -763,7 +826,7 @@ where
                 cmd_pool,
                 cmd_buffer,
             }),
-            frame: 0,
+            entity: Entity::default(),
         };
         println!("{:#?}", &me);
         me
@@ -850,14 +913,33 @@ where
                 }],
                 command::SubpassContents::Inline,
             );
+            // {
+            //     let mapping =
+            //         self.device.map_memory(&inner.instance_buffer_memory, m::Segment::ALL).unwrap();
+            //     let typed_mapping: &mut [InstanceData; 2] = mem::transmute(mapping);
+            //     // let sample_distribution = rand::distributions::uniform::Uniform::new(0., 1.);
+            //     // let mut rng = rand::thread_rng();
+            //     let scaling = glam::Mat4::from_scale([0.1, 0.1, 0.1].into());
+            //     typed_mapping[0] = InstanceData {
+            //         trans: (glam::Mat4::from_translation([0.0, animation_progress, 0.0].into())
+            //             * scaling)
+            //             .into(),
+            //         tex_scissor: Rect { top_left: [0.8, 0.0], size: [0.2; 2] },
+            //     };
+            // }
             inner.cmd_buffer.push_graphics_constants(
                 &inner.pipeline_layout,
                 ShaderStageFlags::VERTEX,
                 0,
-                TransMat4::rotation_z((self.frame % 300) as f32 / 300. * std::f32::consts::PI * 2.)
-                    .as_u32_slice(),
+                ColMatData::from({
+                    //
+                    glam::Mat4::perspective_rh(1., 1., 0., 1.)
+                        * glam::Mat4::from_translation(self.entity.pos.into())
+                        * glam::Mat4::from_rotation_z(self.entity.rot)
+                })
+                .as_u32_slice(),
             );
-            inner.cmd_buffer.draw(0..6, 0..4);
+            inner.cmd_buffer.draw(0..6, 0..NUM_INSTANCES);
             inner.cmd_buffer.end_render_pass();
             inner.cmd_buffer.finish();
             let submission = Submission {
@@ -877,7 +959,6 @@ where
                 self.recreate_swapchain();
             }
         }
-        self.frame += 1;
     }
 }
 

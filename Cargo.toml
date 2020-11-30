@@ -14,3 +14,5 @@ gfx-auxil = "0.7.0"
 gfx-backend-dx12 = "0.6.13"
 debug_stub_derive = "0.3.0"
 rand = { version = "0.7.3", features = ["small_rng"] }
+glam = "0.11.0"
+mint = "0.5.6"
