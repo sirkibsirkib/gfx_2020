@@ -230,9 +230,9 @@ struct RendererInner<B: hal::Backend> {
     image_memory: B::Memory,
     image_upload_memory: B::Memory,
     sampler: B::Sampler,
-    depth_image: B::Image,
-    depth_memory: B::Memory,
-    depth_image_view: B::ImageView,
+    // depth_image: B::Image,
+    // depth_memory: B::Memory,
+    // depth_image_view: B::ImageView,
 }
 
 const fn padded_len(n: usize, non_coherent_atom_size: usize) -> usize {
@@ -396,7 +396,8 @@ where
                 let fit = |n| n as f32 / 5.;
                 let [x, y] = [fit(x), fit(y)];
 
-                let trans = { Mat4::from_translation([x, y, y].into()) };
+                let trans =
+                    { Mat4::from_translation([x, y, if i % 2 == 0 { 0.2 } else { 0.5 }].into()) };
                 let scale = Mat4::from_scale([0.4; 3].into());
                 *instance_data = InstanceData {
                     trans: (trans * scale).into(),
@@ -552,46 +553,46 @@ where
 
         /////////// DEPTH
 
-        let mut depth_image = unsafe {
-            device.create_image(
-                i::Kind::D2(width as i::Size, height as i::Size, 1, 1),
-                1,
-                f::Format::D32Sfloat,
-                i::Tiling::Optimal,
-                i::Usage::DEPTH_STENCIL_ATTACHMENT,
-                i::ViewCapabilities::empty(),
-            )
-        }
-        .unwrap();
+        // let mut depth_image = unsafe {
+        //     device.create_image(
+        //         i::Kind::D2(width as i::Size, height as i::Size, 1, 1),
+        //         1,
+        //         f::Format::D32Sfloat,
+        //         i::Tiling::Optimal,
+        //         i::Usage::DEPTH_STENCIL_ATTACHMENT,
+        //         i::ViewCapabilities::empty(),
+        //     )
+        // }
+        // .unwrap();
 
-        let depth_requirements = unsafe { device.get_image_requirements(&depth_image) };
-        let depth_image_type = memory_types
-            .iter()
-            .enumerate()
-            .position(|(id, mem_type)| {
-                // type_mask is a bit field where each bit represents a memory type. If the bit is set
-                // to 1 it means we can use that type for our buffer. So this code finds the first
-                // memory type that has a `1` (or, is allowed), and is visible to the CPU.
-                depth_requirements.type_mask & (1 << id) != 0
-                    && mem_type.properties.contains(m::Properties::DEVICE_LOCAL)
-            })
-            .unwrap()
-            .into();
-        let depth_memory =
-            unsafe { device.allocate_memory(depth_image_type, depth_requirements.size) }.unwrap();
-        unsafe { device.bind_image_memory(&depth_memory, 0, &mut depth_image) }.unwrap();
-        let depth_image_view = unsafe {
-            device.create_image_view(
-                &depth_image,
-                gfx_hal::image::ViewKind::D2,
-                f::Format::D32Sfloat,
-                gfx_hal::format::Swizzle::NO,
-                i::SubresourceRange { aspects: f::Aspects::DEPTH, ..Default::default() },
-            )
-        }
-        .unwrap();
+        // let depth_requirements = unsafe { device.get_image_requirements(&depth_image) };
+        // let depth_image_type = memory_types
+        //     .iter()
+        //     .enumerate()
+        //     .position(|(id, mem_type)| {
+        //         // type_mask is a bit field where each bit represents a memory type. If the bit is set
+        //         // to 1 it means we can use that type for our buffer. So this code finds the first
+        //         // memory type that has a `1` (or, is allowed), and is visible to the CPU.
+        //         depth_requirements.type_mask & (1 << id) != 0
+        //             && mem_type.properties.contains(m::Properties::DEVICE_LOCAL)
+        //     })
+        //     .unwrap()
+        //     .into();
+        // let depth_memory =
+        //     unsafe { device.allocate_memory(depth_image_type, depth_requirements.size) }.unwrap();
+        // unsafe { device.bind_image_memory(&depth_memory, 0, &mut depth_image) }.unwrap();
+        // let depth_image_view = unsafe {
+        //     device.create_image_view(
+        //         &depth_image,
+        //         gfx_hal::image::ViewKind::D2,
+        //         f::Format::D32Sfloat,
+        //         gfx_hal::format::Swizzle::NO,
+        //         i::SubresourceRange { aspects: f::Aspects::DEPTH, ..Default::default() },
+        //     )
+        // }
+        // .unwrap();
 
-        ///////////
+        /////////// FINISHING UP
 
         let caps = surface.capabilities(&adapter.physical_device);
         let formats = surface.supported_formats(&adapter.physical_device);
@@ -623,47 +624,53 @@ where
                 stencil_ops: pass::AttachmentOps::DONT_CARE,
                 layouts: i::Layout::Undefined..i::Layout::Present,
             };
-            // let depth_attachment = pass::Attachment {
-            //     format: Some(f::Format::D32Sfloat),
-            //     samples: 1,
-            //     ops: pass::AttachmentOps::new(
-            //         pass::AttachmentLoadOp::Clear,
-            //         pass::AttachmentStoreOp::DontCare,
-            //     ),
-            //     stencil_ops: pass::AttachmentOps::DONT_CARE,
-            //     layouts: i::Layout::Undefined..i::Layout::DepthStencilAttachmentOptimal,
-            // };
+            let depth_attachment = pass::Attachment {
+                format: Some(f::Format::D32Sfloat),
+                samples: 1,
+                ops: pass::AttachmentOps {
+                    load: pass::AttachmentLoadOp::Clear,
+                    store: pass::AttachmentStoreOp::DontCare,
+                },
+                stencil_ops: pass::AttachmentOps::DONT_CARE, // PRESERVE ?
+                layouts: i::Layout::Undefined..i::Layout::DepthStencilAttachmentOptimal,
+            };
             let subpass = pass::SubpassDesc {
                 colors: &[(0, i::Layout::ColorAttachmentOptimal)],
-                depth_stencil: None, //Some(&(1, i::Layout::DepthStencilAttachmentOptimal)),
+                depth_stencil: Some(&(1, i::Layout::DepthStencilAttachmentOptimal)),
                 inputs: &[],
                 resolves: &[],
                 preserves: &[],
             };
-            // let in_dependency = pass::SubpassDependency {
-            //     passes: None..Some(0),
-            //     stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT
-            //         ..PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS,
-            //     accesses: i::Access::empty()
-            //         ..(i::Access::COLOR_ATTACHMENT_READ
-            //             | i::Access::COLOR_ATTACHMENT_WRITE
-            //             | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
-            //             | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
-            //     flags: m::Dependencies::empty(),
-            // };
-            // let out_dependency = pass::SubpassDependency {
-            //     passes: Some(0)..None,
-            //     stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS
-            //         ..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
-            //     accesses: i::Access::empty()
-            //         ..(i::Access::COLOR_ATTACHMENT_READ
-            //             | i::Access::COLOR_ATTACHMENT_WRITE
-            //             | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
-            //             | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
-            //     flags: m::Dependencies::empty(),
-            // };
-            unsafe { device.create_render_pass(&[attachment], &[subpass], &[]) }
-                .expect("Can't create render pass")
+            let in_dependency = pass::SubpassDependency {
+                passes: None..Some(0),
+                stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT
+                    ..PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS,
+                accesses: i::Access::empty()
+                    ..(i::Access::COLOR_ATTACHMENT_READ
+                        | i::Access::COLOR_ATTACHMENT_WRITE
+                        | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
+                        | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
+                flags: m::Dependencies::empty(),
+            };
+            let out_dependency = pass::SubpassDependency {
+                passes: Some(0)..None,
+                stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS
+                    ..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
+                accesses: (i::Access::COLOR_ATTACHMENT_READ
+                    | i::Access::COLOR_ATTACHMENT_WRITE
+                    | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
+                    | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                    ..i::Access::empty(),
+                flags: m::Dependencies::empty(),
+            };
+            unsafe {
+                device.create_render_pass(
+                    &[attachment, depth_attachment],
+                    &[subpass],
+                    &[in_dependency, out_dependency],
+                )
+            }
+            .expect("Can't create render pass")
         };
 
         let semaphore = device.create_semaphore().expect("Could not create semaphore");
@@ -823,9 +830,9 @@ where
                 fence,
                 cmd_pool,
                 cmd_buffer,
-                depth_image,
-                depth_memory,
-                depth_image_view,
+                // depth_image,
+                // depth_memory,
+                // depth_image_view,
             }),
             entity: Entity { pos: [0., 0., 0.], rot: 0. },
         };
@@ -858,17 +865,63 @@ where
             match inner.surface.acquire_image(!0) {
                 Ok((image, _)) => image,
                 Err(_) => {
+                    println!("RECRREATING SWACHAIN BTICH");
                     self.recreate_swapchain();
                     return;
                 }
             }
         };
 
+        let mut depth_image = unsafe {
+            self.device.create_image(
+                i::Kind::D2(self.viewport.rect.w as i::Size, self.viewport.rect.h as i::Size, 1, 1),
+                1,
+                f::Format::D32Sfloat,
+                i::Tiling::Optimal,
+                i::Usage::DEPTH_STENCIL_ATTACHMENT,
+                i::ViewCapabilities::empty(),
+            )
+        }
+        .unwrap();
+
+        let depth_requirements = unsafe { self.device.get_image_requirements(&depth_image) };
+        let depth_image_type = self
+            .adapter
+            .physical_device
+            .memory_properties()
+            .memory_types
+            .iter()
+            .enumerate()
+            .position(|(id, mem_type)| {
+                // type_mask is a bit field where each bit represents a memory type. If the bit is set
+                // to 1 it means we can use that type for our buffer. So this code finds the first
+                // memory type that has a `1` (or, is allowed), and is visible to the CPU.
+                depth_requirements.type_mask & (1 << id) != 0
+                    && mem_type.properties.contains(m::Properties::DEVICE_LOCAL)
+            })
+            .unwrap()
+            .into();
+        let depth_memory =
+            unsafe { self.device.allocate_memory(depth_image_type, depth_requirements.size) }
+                .unwrap();
+        unsafe { self.device.bind_image_memory(&depth_memory, 0, &mut depth_image) }.unwrap();
+        let depth_image_view = unsafe {
+            self.device.create_image_view(
+                &depth_image,
+                gfx_hal::image::ViewKind::D2,
+                f::Format::D32Sfloat,
+                gfx_hal::format::Swizzle::NO,
+                i::SubresourceRange { aspects: f::Aspects::DEPTH, ..Default::default() },
+            )
+        }
+        .unwrap();
+
         let framebuffer = unsafe {
+            let views = &[surface_image.borrow(), depth_image_view.borrow()];
             self.device
                 .create_framebuffer(
                     &inner.render_pass,
-                    iter::once(surface_image.borrow()),
+                    views.iter().copied(),
                     i::Extent {
                         width: self.dimensions.width,
                         height: self.dimensions.height,
@@ -912,11 +965,11 @@ where
                 self.viewport.rect,
                 &[
                     command::ClearValue {
-                        color: command::ClearColor { float32: [0., 0., 0., 1.0] },
+                        color: command::ClearColor { float32: [0., 0., 0., 1.] },
                     },
-                    // command::ClearValue {
-                    //     depth_stencil: command::ClearDepthStencil { depth: 1., stencil: 0 },
-                    // },
+                    command::ClearValue {
+                        depth_stencil: command::ClearDepthStencil { depth: 1., stencil: 0 },
+                    },
                 ],
                 command::SubpassContents::Inline,
             );
@@ -961,6 +1014,11 @@ where
             if result.is_err() {
                 self.recreate_swapchain();
             }
+
+            //
+            self.device.destroy_image(depth_image);
+            self.device.free_memory(depth_memory);
+            self.device.destroy_image_view(depth_image_view);
         }
     }
 }
@@ -979,9 +1037,9 @@ where
             self.device.destroy_buffer(inner.instance_buffer);
             self.device.destroy_buffer(inner.image_upload_buffer);
             self.device.destroy_image(inner.image_logo);
-            self.device.destroy_image(inner.depth_image);
+            // self.device.destroy_image(inner.depth_image);
             self.device.destroy_image_view(inner.image_view);
-            self.device.destroy_image_view(inner.depth_image_view);
+            // self.device.destroy_image_view(inner.depth_image_view);
             self.device.destroy_sampler(inner.sampler);
             self.device.destroy_command_pool(inner.cmd_pool);
             self.device.destroy_semaphore(inner.semaphore);
@@ -991,7 +1049,7 @@ where
             self.device.free_memory(inner.vertex_buffer_memory);
             self.device.free_memory(inner.instance_buffer_memory);
             self.device.free_memory(inner.image_memory);
-            self.device.free_memory(inner.depth_memory);
+            // self.device.free_memory(inner.depth_memory);
             self.device.free_memory(inner.image_upload_memory);
             self.device.destroy_graphics_pipeline(inner.pipeline);
             self.device.destroy_pipeline_layout(inner.pipeline_layout);
