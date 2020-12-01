@@ -40,7 +40,7 @@ impl ColMatData {
     }
 }
 
-const NUM_INSTANCES: u32 = 6;
+const NUM_INSTANCES: u32 = 12;
 mod want;
 
 const DIMS: window::Extent2D = window::Extent2D { width: 800, height: 800 };
@@ -391,62 +391,35 @@ where
             device.bind_buffer_memory(&memory, 0, &mut instance_buffer).unwrap();
             let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
             let typed_mapping: &mut [InstanceData; MAX_INSTANCES] = mem::transmute(mapping);
-            const TILE_SIZE: [f32; 2] = [1. / 11., 1. / 5.];
-            typed_mapping[0] = InstanceData {
-                trans: (Mat4::from_rotation_x(0.) // top
-                    * Mat4::from_translation([0., 0., -0.5].into()))
-                .into(),
-                tex_scissor: Rect {
-                    top_left: [TILE_SIZE[0] * 0., TILE_SIZE[1] * 0.],
-                    size: TILE_SIZE,
-                },
+            fn init(typed_mapping: &mut [InstanceData], offset: Vec3) {
+                const TILE_SIZE: [f32; 2] = [1. / 11., 1. / 5.];
+                let around_x_not_y = [true, true, true, true, false, false];
+                let around_rot = [0., PI, PI / 2., -PI / 2., PI / 2., -PI / 2.];
+                let z_rot = [0., 0., 0., PI, PI / 2., PI * 1.5];
+                let tex_tl_z = [0, 2, 3, 3, 3, 3];
+                for (i, typed_mapping) in typed_mapping.into_iter().enumerate() {
+                    let arot = around_rot[i];
+                    let xy_trans = if around_x_not_y[i] {
+                        Mat4::from_rotation_x(arot)
+                    } else {
+                        Mat4::from_rotation_y(arot)
+                    };
+                    let trans = (Mat4::from_translation(offset)
+                        * xy_trans
+                        * Mat4::from_translation([0., 0., -0.5].into())
+                        * Mat4::from_rotation_z(z_rot[i]))
+                    .into();
+                    *typed_mapping = InstanceData {
+                        trans,
+                        tex_scissor: Rect {
+                            top_left: [TILE_SIZE[0] * tex_tl_z[i] as f32, 0.],
+                            size: TILE_SIZE,
+                        },
+                    };
+                }
             };
-            typed_mapping[1] = InstanceData {
-                trans: (Mat4::from_rotation_x(PI) // bottom
-                    * Mat4::from_translation([0., 0., -0.5].into()))
-                .into(),
-                tex_scissor: Rect {
-                    top_left: [TILE_SIZE[0] * 2., TILE_SIZE[1] * 0.],
-                    size: TILE_SIZE,
-                },
-            };
-            typed_mapping[2] = InstanceData {
-                trans: (Mat4::from_rotation_x(PI / 2.) // front
-                    * Mat4::from_translation([0., 0., -0.5].into())
-                    * Mat4::from_rotation_z(0.))
-                .into(),
-                tex_scissor: Rect {
-                    top_left: [TILE_SIZE[0] * 3., TILE_SIZE[1] * 0.],
-                    size: TILE_SIZE,
-                },
-            };
-            typed_mapping[3] = InstanceData {
-                trans: (Mat4::from_rotation_x(-PI / 2.) // back
-                    * Mat4::from_translation([0., 0., -0.5].into()) * Mat4::from_rotation_z(PI))
-                .into(),
-                tex_scissor: Rect {
-                    top_left: [TILE_SIZE[0] * 3., TILE_SIZE[1] * 0.],
-                    size: TILE_SIZE,
-                },
-            };
-            typed_mapping[4] = InstanceData {
-                trans: (Mat4::from_rotation_y(PI / 2.) // L
-                    * Mat4::from_translation([0., 0., -0.5].into()) * Mat4::from_rotation_z(PI / 2.))
-                .into(),
-                tex_scissor: Rect {
-                    top_left: [TILE_SIZE[0] * 3., TILE_SIZE[1] * 0.],
-                    size: TILE_SIZE,
-                },
-            };
-            typed_mapping[5] = InstanceData {
-                trans: (Mat4::from_rotation_y(-PI / 2.) // R
-                    * Mat4::from_translation([0., 0., -0.5].into()) * Mat4::from_rotation_z(PI * 3. / 2.))
-                .into(),
-                tex_scissor: Rect {
-                    top_left: [TILE_SIZE[0] * 3., TILE_SIZE[1] * 0.],
-                    size: TILE_SIZE,
-                },
-            };
+            init(&mut typed_mapping[0..6], [0., 0., 0.].into());
+            init(&mut typed_mapping[6..12], [2., 0., 0.].into());
             // let sample_distribution = rand::distributions::uniform::Uniform::new(0., 1.);
             // let mut rng = rand::thread_rng();
             device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
@@ -594,6 +567,7 @@ where
             cmd_buffer.finish();
             queue_group.queues[0].submit_without_semaphores(Some(&cmd_buffer), Some(&mut fence));
             device.wait_for_fence(&fence, !0).expect("Can't wait for fence");
+            drop(img_rgba);
         }
 
         /////////// DEPTH
@@ -640,6 +614,7 @@ where
         /////////// FINISHING UP
 
         let caps = surface.capabilities(&adapter.physical_device);
+        println!("{:?}", &caps);
         let formats = surface.supported_formats(&adapter.physical_device);
         println!("formats: {:?}", formats);
         let format = formats.map_or(f::Format::Rgba8Srgb, |formats| {
@@ -815,7 +790,7 @@ where
                     &pipeline_layout,
                     Subpass { index: 0, main_pass: &render_pass },
                 );
-                pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
+                // pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
                 pipeline_desc.depth_stencil = pso::DepthStencilDesc {
                     depth: Some(pso::DepthTest { fun: pso::Comparison::LessEqual, write: true }),
                     depth_bounds: false,
@@ -1037,7 +1012,7 @@ where
             inner.cmd_buffer.finish();
             let submission = Submission {
                 command_buffers: iter::once(&inner.cmd_buffer),
-                wait_semaphores: iter::once((&inner.semaphore, pso::PipelineStage::BOTTOM_OF_PIPE)),
+                wait_semaphores: None,
                 signal_semaphores: iter::once(&inner.semaphore),
             };
             self.queue_group.queues[0].submit(submission, Some(&inner.fence));
