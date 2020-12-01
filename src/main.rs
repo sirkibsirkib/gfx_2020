@@ -90,6 +90,7 @@ fn main() {
     let event_loop = winit::event_loop::EventLoop::new();
 
     let wb = winit::window::WindowBuilder::new()
+        .with_resizable(false)
         .with_min_inner_size(winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(64.0, 64.0)))
         .with_inner_size(winit::dpi::Size::Physical(winit::dpi::PhysicalSize::new(
             DIMS.width,
@@ -145,12 +146,7 @@ fn main() {
                     }
                     _ => {}
                 },
-                winit::event::WindowEvent::Resized(dims) => {
-                    println!("resized to {:?}", dims);
-                    renderer.dimensions =
-                        window::Extent2D { width: dims.width, height: dims.height };
-                    renderer.recreate_swapchain();
-                }
+                winit::event::WindowEvent::Resized(_) => unreachable!(),
                 winit::event::WindowEvent::MouseWheel { delta, .. } => {
                     if let winit::event::MouseScrollDelta::LineDelta(_x, y) = delta {
                         const MUL: f32 = 0.03;
@@ -185,7 +181,7 @@ struct Renderer<B: hal::Backend> {
     queue_group: QueueGroup<B>,
     adapter: hal::adapter::Adapter<B>,
     format: hal::format::Format,
-    dimensions: window::Extent2D,
+    // dimensions: window::Extent2D,
     viewport: pso::Viewport,
     desc_set: B::DescriptorSet,
     inner: ManuallyDrop<RendererInner<B>>,
@@ -234,6 +230,8 @@ struct RendererInner<B: hal::Backend> {
     // depth_memory: B::Memory,
     // depth_image_view: B::ImageView,
 }
+
+struct FrameResources {}
 
 const fn padded_len(n: usize, non_coherent_atom_size: usize) -> usize {
     ((n + non_coherent_atom_size - 1) / non_coherent_atom_size) * non_coherent_atom_size
@@ -396,8 +394,7 @@ where
                 let fit = |n| n as f32 / 5.;
                 let [x, y] = [fit(x), fit(y)];
 
-                let trans =
-                    { Mat4::from_translation([x, y, if i % 2 == 0 { 0.2 } else { 0.5 }].into()) };
+                let trans = { Mat4::from_translation([x, y, (x + 0.01) * y].into()) };
                 let scale = Mat4::from_scale([0.4; 3].into());
                 *instance_data = InstanceData {
                     trans: (trans * scale).into(),
@@ -641,36 +638,30 @@ where
                 resolves: &[],
                 preserves: &[],
             };
-            let in_dependency = pass::SubpassDependency {
-                passes: None..Some(0),
-                stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT
-                    ..PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS,
-                accesses: i::Access::empty()
-                    ..(i::Access::COLOR_ATTACHMENT_READ
-                        | i::Access::COLOR_ATTACHMENT_WRITE
-                        | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
-                        | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
-                flags: m::Dependencies::empty(),
-            };
-            let out_dependency = pass::SubpassDependency {
-                passes: Some(0)..None,
-                stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS
-                    ..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
-                accesses: (i::Access::COLOR_ATTACHMENT_READ
-                    | i::Access::COLOR_ATTACHMENT_WRITE
-                    | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
-                    | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE)
-                    ..i::Access::empty(),
-                flags: m::Dependencies::empty(),
-            };
-            unsafe {
-                device.create_render_pass(
-                    &[attachment, depth_attachment],
-                    &[subpass],
-                    &[in_dependency, out_dependency],
-                )
-            }
-            .expect("Can't create render pass")
+            // let in_dependency = pass::SubpassDependency {
+            //     passes: None..Some(0),
+            //     stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT
+            //         ..PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS,
+            //     accesses: i::Access::empty()
+            //         ..(i::Access::COLOR_ATTACHMENT_READ
+            //             | i::Access::COLOR_ATTACHMENT_WRITE
+            //             | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
+            //             | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
+            //     flags: m::Dependencies::empty(),
+            // };
+            // let out_dependency = pass::SubpassDependency {
+            //     passes: Some(0)..None,
+            //     stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS
+            //         ..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
+            //     accesses: (i::Access::COLOR_ATTACHMENT_READ
+            //         | i::Access::COLOR_ATTACHMENT_WRITE
+            //         | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
+            //         | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE)
+            //         ..i::Access::empty(),
+            //     flags: m::Dependencies::empty(),
+            // };
+            unsafe { device.create_render_pass(&[attachment, depth_attachment], &[subpass], &[]) }
+                .expect("Can't create render pass")
         };
 
         let semaphore = device.create_semaphore().expect("Could not create semaphore");
@@ -805,7 +796,7 @@ where
             queue_group,
             adapter,
             format,
-            dimensions: DIMS,
+            // dimensions: DIMS,
             viewport,
             desc_set,
             inner: ManuallyDrop::new(RendererInner {
@@ -840,23 +831,24 @@ where
         me
     }
 
-    fn recreate_swapchain(&mut self) {
-        let inner = &mut *self.inner;
-        let caps = inner.surface.capabilities(&self.adapter.physical_device);
-        let swap_config = window::SwapchainConfig::from_caps(&caps, self.format, self.dimensions);
-        println!("SWAP CONFIG {:?}", swap_config);
-        let extent = swap_config.extent.to_extent();
+    // fn recreate_swapchain(&mut self) {
+    //     let inner = &mut *self.inner;
+    //     let caps = inner.surface.capabilities(&self.adapter.physical_device);
+    //     let swap_config = window::SwapchainConfig::from_caps(&caps, self.format, self.dimensions);
+    //     println!("SWAP CONFIG {:?}", swap_config);
+    //     let extent = swap_config.extent.to_extent();
 
-        unsafe {
-            inner
-                .surface
-                .configure_swapchain(&self.device, swap_config)
-                .expect("Can't create swapchain");
-        }
+    //     unsafe {
+    //         inner
+    //             .surface
+    //             .configure_swapchain(&self.device, swap_config)
+    //             .expect("Can't create swapchain");
+    //     }
 
-        self.viewport.rect.w = extent.width as _;
-        self.viewport.rect.h = extent.height as _;
-    }
+    //     self.viewport.rect.w = extent.width as _;
+    //     self.viewport.rect.h = extent.height as _;
+    //     panic!("DON'T RECREATE THX");
+    // }
 
     fn render(&mut self) {
         println!("entity {:#?}", &self.entity);
@@ -866,8 +858,9 @@ where
                 Ok((image, _)) => image,
                 Err(_) => {
                     println!("RECRREATING SWACHAIN BTICH");
-                    self.recreate_swapchain();
-                    return;
+                    // self.recreate_swapchain();
+                    // return;
+                    panic!("WAH");
                 }
             }
         };
@@ -922,11 +915,7 @@ where
                 .create_framebuffer(
                     &inner.render_pass,
                     views.iter().copied(),
-                    i::Extent {
-                        width: self.dimensions.width,
-                        height: self.dimensions.height,
-                        depth: 1,
-                    },
+                    i::Extent { width: DIMS.width, height: DIMS.height, depth: 1 },
                 )
                 .unwrap()
         };
@@ -978,20 +967,23 @@ where
                 ShaderStageFlags::VERTEX,
                 0,
                 ColMatData::from({
-                    // let persp = Mat4::perspective_infinite_rh(1., 1., 0.);
-                    // let view = {
-                    //     let center = self.entity.pos.into();
-                    //     let up = [0., 0., 1.].into();
-                    //     let eye = [
-                    //         self.entity.rot.cos(), // to +x when ros is zero
-                    //         self.entity.rot.sin(), // to
-                    //         0.,
-                    //     ]
-                    //     .into();
-                    //     Mat4::look_at_rh(eye, center, up)
-                    // };
+                    let persp = Mat4::perspective_lh(1.5, 1., 0., 1.);
+                    let view = {
+                        let center = self.entity.pos.into();
+                        let up = [0., 0., 1.].into();
+                        let eye = [
+                            self.entity.rot.cos(), // to +x when ros is zero
+                            self.entity.rot.sin(), // to
+                            0.,
+                        ]
+                        .into();
+                        Mat4::look_at_lh(eye, center, up)
+                    };
                     // Mat4::from_scale([0.1, 0.1, 0.1].into())
-                    Mat4::identity()
+                    // let view = Mat4::from_translation(self.entity.pos.into());
+                    // let rot_round = Mat4::from_rotation_z(self.entity.rot);
+                    // let rot_up = Mat4::from_rotation_y(-PI / 2.);
+                    persp * view
                 })
                 .as_u32_slice(),
             );
@@ -1000,25 +992,25 @@ where
             inner.cmd_buffer.finish();
             let submission = Submission {
                 command_buffers: iter::once(&inner.cmd_buffer),
-                wait_semaphores: None,
+                wait_semaphores: iter::once((&inner.semaphore, pso::PipelineStage::BOTTOM_OF_PIPE)),
                 signal_semaphores: iter::once(&inner.semaphore),
             };
             self.queue_group.queues[0].submit(submission, Some(&inner.fence));
             // present frame
-            let result = self.queue_group.queues[0].present(
+            let _result = self.queue_group.queues[0].present(
                 &mut inner.surface,
                 surface_image,
                 Some(&inner.semaphore), // waits for
             );
             self.device.destroy_framebuffer(framebuffer);
-            if result.is_err() {
-                self.recreate_swapchain();
-            }
+            // if result.is_err() {
+            //     self.recreate_swapchain();
+            // }
 
             //
-            self.device.destroy_image(depth_image);
-            self.device.free_memory(depth_memory);
-            self.device.destroy_image_view(depth_image_view);
+            // self.device.destroy_image(depth_image);
+            // self.device.free_memory(depth_memory);
+            // self.device.destroy_image_view(depth_image_view);
         }
     }
 }
