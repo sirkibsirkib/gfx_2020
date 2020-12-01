@@ -15,7 +15,7 @@ use gfx_hal::{
     queue::{QueueGroup, Submission},
     window,
 };
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 use std::{
     borrow::Borrow,
     f32::consts::PI,
@@ -40,7 +40,7 @@ impl ColMatData {
     }
 }
 
-const NUM_INSTANCES: u32 = 25;
+const NUM_INSTANCES: u32 = 6;
 mod want;
 
 const DIMS: window::Extent2D = window::Extent2D { width: 800, height: 800 };
@@ -83,7 +83,7 @@ mod vert_data_consts {
     const TR: VertexData = VertexData { a_Pos: [D, -D], a_Uv: [1.0, 0.0] };
     const BR: VertexData = VertexData { a_Pos: [D, D], a_Uv: [1.0, 1.0] };
     const BL: VertexData = VertexData { a_Pos: [-D, D], a_Uv: [0.0, 1.0] };
-    pub(crate) const QUAD: [VertexData; 6] = [TL, TR, BR, BR, BL, TL];
+    pub(crate) const QUAD: [VertexData; 6] = [BR, TR, TL, TL, BL, BR];
 }
 
 fn main() {
@@ -101,6 +101,7 @@ fn main() {
     // instantiate backend
     let window = wb.build(&event_loop).unwrap();
     window.set_cursor_grab(true).unwrap();
+    window.set_cursor_visible(false);
     let instance = back::Instance::create("gfx-rs quad", 1).expect("Failed to create an instance!");
     let surface = unsafe { instance.create_surface(&window).expect("Failed to create a surface!") };
 
@@ -144,6 +145,12 @@ fn main() {
                     Some(winit::event::VirtualKeyCode::D) => {
                         renderer.entity.move_relative(PI * 3. / 2., MOV_DIST);
                     }
+                    Some(winit::event::VirtualKeyCode::Space) => {
+                        renderer.entity.pos[2] -= MOV_DIST;
+                    }
+                    Some(winit::event::VirtualKeyCode::LControl) => {
+                        renderer.entity.pos[2] += MOV_DIST;
+                    }
                     _ => {}
                 },
                 winit::event::WindowEvent::Resized(_) => unreachable!(),
@@ -157,7 +164,7 @@ fn main() {
             },
             winit::event::Event::DeviceEvent { event, .. } => match event {
                 winit::event::DeviceEvent::MouseMotion { delta: (x, _y) } => {
-                    renderer.entity.rot -= 0.001 * x as f32;
+                    renderer.entity.rot -= 0.003 * x as f32;
                     window
                         .set_cursor_position(winit::dpi::Position::Logical(
                             winit::dpi::LogicalPosition { x: 400., y: 400. },
@@ -194,10 +201,10 @@ struct Entity {
     rot: f32,
 }
 impl Entity {
-    fn move_relative(&mut self, x_angle_relative: f32, distance: f32) {
-        let angle = self.rot + x_angle_relative;
-        self.pos[0] -= angle.sin() * distance;
-        self.pos[1] += angle.cos() * distance;
+    fn move_relative(&mut self, z_angle_relative: f32, distance: f32) {
+        let angle = self.rot + z_angle_relative;
+        self.pos[0] += angle.cos() * distance; // +x when angle is 0.
+        self.pos[1] -= angle.sin() * distance; // -y when angle is PI/2.
     }
 }
 
@@ -230,8 +237,6 @@ struct RendererInner<B: hal::Backend> {
     // depth_memory: B::Memory,
     // depth_image_view: B::ImageView,
 }
-
-struct FrameResources {}
 
 const fn padded_len(n: usize, non_coherent_atom_size: usize) -> usize {
     ((n + non_coherent_atom_size - 1) / non_coherent_atom_size) * non_coherent_atom_size
@@ -386,21 +391,64 @@ where
             device.bind_buffer_memory(&memory, 0, &mut instance_buffer).unwrap();
             let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
             let typed_mapping: &mut [InstanceData; MAX_INSTANCES] = mem::transmute(mapping);
+            const TILE_SIZE: [f32; 2] = [1. / 11., 1. / 5.];
+            typed_mapping[0] = InstanceData {
+                trans: (Mat4::from_rotation_x(0.) // top
+                    * Mat4::from_translation([0., 0., -0.5].into()))
+                .into(),
+                tex_scissor: Rect {
+                    top_left: [TILE_SIZE[0] * 0., TILE_SIZE[1] * 0.],
+                    size: TILE_SIZE,
+                },
+            };
+            typed_mapping[1] = InstanceData {
+                trans: (Mat4::from_rotation_x(PI) // bottom
+                    * Mat4::from_translation([0., 0., -0.5].into()))
+                .into(),
+                tex_scissor: Rect {
+                    top_left: [TILE_SIZE[0] * 2., TILE_SIZE[1] * 0.],
+                    size: TILE_SIZE,
+                },
+            };
+            typed_mapping[2] = InstanceData {
+                trans: (Mat4::from_rotation_x(PI / 2.) // front
+                    * Mat4::from_translation([0., 0., -0.5].into())
+                    * Mat4::from_rotation_z(0.))
+                .into(),
+                tex_scissor: Rect {
+                    top_left: [TILE_SIZE[0] * 3., TILE_SIZE[1] * 0.],
+                    size: TILE_SIZE,
+                },
+            };
+            typed_mapping[3] = InstanceData {
+                trans: (Mat4::from_rotation_x(-PI / 2.) // back
+                    * Mat4::from_translation([0., 0., -0.5].into()) * Mat4::from_rotation_z(PI))
+                .into(),
+                tex_scissor: Rect {
+                    top_left: [TILE_SIZE[0] * 3., TILE_SIZE[1] * 0.],
+                    size: TILE_SIZE,
+                },
+            };
+            typed_mapping[4] = InstanceData {
+                trans: (Mat4::from_rotation_y(PI / 2.) // L
+                    * Mat4::from_translation([0., 0., -0.5].into()) * Mat4::from_rotation_z(PI / 2.))
+                .into(),
+                tex_scissor: Rect {
+                    top_left: [TILE_SIZE[0] * 3., TILE_SIZE[1] * 0.],
+                    size: TILE_SIZE,
+                },
+            };
+            typed_mapping[5] = InstanceData {
+                trans: (Mat4::from_rotation_y(-PI / 2.) // R
+                    * Mat4::from_translation([0., 0., -0.5].into()) * Mat4::from_rotation_z(PI * 3. / 2.))
+                .into(),
+                tex_scissor: Rect {
+                    top_left: [TILE_SIZE[0] * 3., TILE_SIZE[1] * 0.],
+                    size: TILE_SIZE,
+                },
+            };
             // let sample_distribution = rand::distributions::uniform::Uniform::new(0., 1.);
             // let mut rng = rand::thread_rng();
-            for (i, instance_data) in typed_mapping.iter_mut().enumerate() {
-                println!("{:?}", i);
-                let [x, y] = [i % 5, i / 5];
-                let fit = |n| n as f32 / 5.;
-                let [x, y] = [fit(x), fit(y)];
-
-                let trans = { Mat4::from_translation([x, y, (x + 0.01) * y].into()) };
-                let scale = Mat4::from_scale([0.4; 3].into());
-                *instance_data = InstanceData {
-                    trans: (trans * scale).into(),
-                    tex_scissor: Rect { top_left: [0.0, 0.2], size: [0.2; 2] },
-                }
-            }
             device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
             device.unmap_memory(&memory);
             memory
@@ -767,6 +815,7 @@ where
                     &pipeline_layout,
                     Subpass { index: 0, main_pass: &render_pass },
                 );
+                pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
                 pipeline_desc.depth_stencil = pso::DepthStencilDesc {
                     depth: Some(pso::DepthTest { fun: pso::Comparison::LessEqual, write: true }),
                     depth_bounds: false,
@@ -969,21 +1018,17 @@ where
                 ColMatData::from({
                     let persp = Mat4::perspective_lh(1.5, 1., 0., 1.);
                     let view = {
-                        let center = self.entity.pos.into();
-                        let up = [0., 0., 1.].into();
-                        let eye = [
-                            self.entity.rot.cos(), // to +x when ros is zero
-                            self.entity.rot.sin(), // to
-                            0.,
-                        ]
-                        .into();
+                        let eye = self.entity.pos.into(); // camera position
+                        let up = [0., 0., 1.].into(); // vertical up on screen
+                        let center =
+                            eye + Vec3::from([self.entity.rot.cos(), -self.entity.rot.sin(), 0.]); // rot=0. => [1., 0.]. rot=PI/2. => [0., -1.]
                         Mat4::look_at_lh(eye, center, up)
                     };
                     // Mat4::from_scale([0.1, 0.1, 0.1].into())
                     // let view = Mat4::from_translation(self.entity.pos.into());
-                    // let rot_round = Mat4::from_rotation_z(self.entity.rot);
                     // let rot_up = Mat4::from_rotation_y(-PI / 2.);
                     persp * view
+                    // Mat4::identity()
                 })
                 .as_u32_slice(),
             );
