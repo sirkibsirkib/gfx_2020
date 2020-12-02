@@ -54,24 +54,24 @@ struct TriangleVertData {
     a_Uv: [f32; 2],  // in texture
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-#[allow(non_snake_case)]
-struct InstanceData {
-    // consider: mat3
-    // consider: expose as a neater structure (rot, [x,y], [sx, sy])
-    trans: ColMatData,
-    // TODO decouple
-    tex_scissor: Rect,
-}
-impl Default for InstanceData {
-    fn default() -> Self {
-        Self {
-            trans: Mat4::identity().into(),
-            tex_scissor: Rect { top_left: [0.; 2], size: [1.; 2] },
-        }
-    }
-}
+// #[repr(C)]
+// #[derive(Debug, Clone, Copy)]
+// #[allow(non_snake_case)]
+// struct InstanceData {
+//     // consider: mat3
+//     // consider: expose as a neater structure (rot, [x,y], [sx, sy])
+//     trans: ColMatData,
+//     // TODO decouple
+//     tex_scissor: Rect,
+// }
+// impl Default for InstanceData {
+//     fn default() -> Self {
+//         Self {
+//             trans: Mat4::identity().into(),
+//             tex_scissor: Rect { top_left: [0.; 2], size: [1.; 2] },
+//         }
+//     }
+// }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -105,6 +105,15 @@ impl<B: hal::Backend> DeviceDestroy<ImageBundle<B>> for B::Device {
         self.destroy_image_view(view);
     }
 }
+impl<B: hal::Backend> DeviceDestroy<VertexBufferBundle<B>> for B::Device {
+    unsafe fn device_destroy(
+        &mut self,
+        VertexBufferBundle { buffer, memory }: VertexBufferBundle<B>,
+    ) {
+        self.destroy_buffer(buffer);
+        self.free_memory(memory);
+    }
+}
 
 fn main() {
     let event_loop = winit::event_loop::EventLoop::new();
@@ -130,9 +139,10 @@ fn main() {
         image::io::Reader::open("./src/data/logo.png").unwrap().decode().unwrap().to_rgba();
     renderer.add_image(img_rgba).unwrap();
 
-    let mut instance_data = [InstanceData::default(); NUM_INSTANCES as usize];
-    for (i, instance) in instance_data.iter_mut().enumerate() {
-        let trans = {
+    let mut instance_t_data = [Mat4::default(); NUM_INSTANCES as usize];
+    let mut instance_s_data = [Rect::default(); NUM_INSTANCES as usize];
+    for (i, (t, s)) in instance_t_data.iter_mut().zip(instance_s_data.iter_mut()).enumerate() {
+        *t = {
             let moved = Mat4::from_translation(
                 [
                     i as f32 / 10., //
@@ -145,13 +155,13 @@ fn main() {
             (moved * scale).into()
         };
         const TILE_SIZE: [f32; 2] = [1. / 11., 1. / 5.];
-        let tex_scissor = {
+        *s = {
             let top_left = [i as f32 * TILE_SIZE[0], 0. * TILE_SIZE[1]];
             Rect { top_left, size: TILE_SIZE }
         };
-        *instance = InstanceData { trans, tex_scissor };
     }
-    renderer.overwrite_instance_data(0, &instance_data).unwrap();
+    renderer.write_instance_t_buffer(0, &instance_t_data).unwrap();
+    renderer.write_instance_s_buffer(0, &instance_s_data).unwrap();
     renderer.render(0);
 
     // It is important that the closure move captures the Renderer,
@@ -207,6 +217,12 @@ struct PerFif<B: hal::Backend> {
 }
 
 #[derive(Debug)]
+struct VertexBufferBundle<B: hal::Backend> {
+    buffer: B::Buffer,
+    memory: B::Memory,
+}
+
+#[derive(Debug)]
 struct ImageBundle<B: hal::Backend> {
     image: B::Image,
     memory: B::Memory,
@@ -225,10 +241,9 @@ struct RendererInner<B: hal::Backend> {
     surface: B::Surface,
     cmd_pool: B::CommandPool,
     set_layout: B::DescriptorSetLayout,
-    vertex_buffer: B::Buffer,
-    instance_buffer: B::Buffer,
-    vertex_buffer_memory: B::Memory,
-    instance_buffer_memory: B::Memory,
+    triangle_vertex_buffer_bundle: VertexBufferBundle<B>,
+    instance_t_buffer_bundle: VertexBufferBundle<B>,
+    instance_s_buffer_bundle: VertexBufferBundle<B>,
     sampler: B::Sampler,
     tex_image_bundles: Vec<ImageBundle<B>>,
     per_fif: Vec<PerFif<B>>,
@@ -517,52 +532,27 @@ where
         };
 
         //////////////////
-
-        const MAX_INSTANCES: usize = NUM_INSTANCES as usize;
-        let mut instance_buffer = unsafe {
-            device.create_buffer(
-                padded_len(
-                    MAX_INSTANCES * mem::size_of::<InstanceData>(),
-                    limits.non_coherent_atom_size,
-                ) as u64,
-                hal::buffer::Usage::VERTEX,
-            )
-        }
-        .unwrap();
-        let instance_buffer_req = unsafe { device.get_buffer_requirements(&instance_buffer) };
-        let instance_buffer_memory = unsafe {
-            let memory = device.allocate_memory(upload_type, instance_buffer_req.size).unwrap();
-            device.bind_buffer_memory(&memory, 0, &mut instance_buffer).unwrap();
-
-            let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
-            let typed_mapping: &mut [InstanceData; MAX_INSTANCES] = mem::transmute(mapping);
-            for (i, instance) in typed_mapping.iter_mut().enumerate() {
-                let trans = {
-                    let moved = Mat4::from_translation(
-                        [
-                            i as f32 / 10., //
-                            i as f32 / 46., //
-                            (i % 3) as f32 / 3.,
-                        ]
-                        .into(),
-                    );
-                    let scale = Mat4::from_scale([0.2; 3].into());
-                    (moved * scale).into()
-                };
-                const TILE_SIZE: [f32; 2] = [1. / 11., 1. / 5.];
-                let tex_scissor = {
-                    let top_left = [i as f32 * TILE_SIZE[0], 0. * TILE_SIZE[1]];
-                    Rect { top_left, size: TILE_SIZE }
-                };
-                *instance = InstanceData { trans, tex_scissor };
-            }
-            device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
-            device.unmap_memory(&memory);
-            memory
-        };
-
         let caps = surface.capabilities(&adapter.physical_device);
-        println!("{:?}", &caps);
+
+        let clos = |stride| {
+            const MAX_INSTANCES: usize = NUM_INSTANCES as usize;
+            let mut buffer = unsafe {
+                device.create_buffer(
+                    padded_len(MAX_INSTANCES * stride, limits.non_coherent_atom_size) as u64,
+                    hal::buffer::Usage::VERTEX,
+                )
+            }
+            .unwrap();
+            let instance_buffer_req = unsafe { device.get_buffer_requirements(&buffer) };
+            let memory =
+                unsafe { device.allocate_memory(upload_type, instance_buffer_req.size) }.unwrap();
+            unsafe { device.bind_buffer_memory(&memory, 0, &mut buffer) }.unwrap();
+            println!("{:?}", &caps);
+            VertexBufferBundle { buffer, memory }
+        };
+        let instance_t_buffer_bundle = clos(mem::size_of::<Mat4>());
+        let instance_s_buffer_bundle = clos(mem::size_of::<Rect>());
+
         let formats = surface.supported_formats(&adapter.physical_device);
         println!("formats: {:?}", formats);
         let format = formats.map_or(f::Format::Rgba8Srgb, |formats| {
@@ -686,7 +676,12 @@ where
                     },
                     pso::VertexBufferDesc {
                         binding: 1,
-                        stride: mem::size_of::<InstanceData>() as u32,
+                        stride: mem::size_of::<Mat4>() as u32,
+                        rate: VertexInputRate::Instance(1),
+                    },
+                    pso::VertexBufferDesc {
+                        binding: 2,
+                        stride: mem::size_of::<Rect>() as u32,
                         rate: VertexInputRate::Instance(1),
                     },
                 ];
@@ -715,11 +710,10 @@ where
                     for i in 0..2 {
                         attributes.push(pso::AttributeDesc {
                             location: i + 2 + 4,
-                            binding: 1,
+                            binding: 2,
                             element: pso::Element {
                                 format: f::Format::Rgba32Sfloat,
-                                offset: 4 * mem::size_of::<[f32; 4]>() as u32
-                                    + i * mem::size_of::<[f32; 2]>() as u32,
+                                offset: i * mem::size_of::<[f32; 2]>() as u32,
                             },
                         });
                     }
@@ -845,12 +839,14 @@ where
                 render_pass,
                 desc_pool,
                 set_layout,
-                vertex_buffer,
-                instance_buffer,
+                triangle_vertex_buffer_bundle: VertexBufferBundle {
+                    buffer: vertex_buffer,
+                    memory: vertex_buffer_memory,
+                },
+                instance_t_buffer_bundle,
+                instance_s_buffer_bundle,
                 pipeline,
                 pipeline_layout,
-                vertex_buffer_memory,
-                instance_buffer_memory,
                 sampler,
                 tex_image_bundles: vec![],
                 per_fif,
@@ -861,27 +857,44 @@ where
         me
     }
 
-    fn overwrite_instance_data(&mut self, start: usize, src: &[InstanceData]) -> Result<(), ()> {
-        const STRIDE: usize = mem::size_of::<InstanceData>();
-        let offset = start * STRIDE;
-        let size = src.len() * STRIDE;
+    fn write_instance_buffer<T: Copy>(
+        device: &mut B::Device,
+        instance_buffer_bundle: &mut VertexBufferBundle<B>,
+        start: usize,
+        src: &[T],
+    ) -> Result<(), ()> {
+        let stride = mem::size_of::<T>();
+        let offset = start * stride;
+        let size = src.len() * stride;
         let segment = m::Segment { offset: offset as u64, size: Some(size as u64) };
         unsafe {
-            let mapping = self
-                .device
-                .map_memory(&self.inner.instance_buffer_memory, segment.clone())
-                .unwrap();
-            let dest: &mut [InstanceData] = std::slice::from_raw_parts_mut(mapping as _, src.len());
+            let mapping =
+                device.map_memory(&instance_buffer_bundle.memory, segment.clone()).unwrap();
+            let dest: &mut [T] = std::slice::from_raw_parts_mut(mapping as _, src.len());
             dest.copy_from_slice(src);
-            self.device
-                .flush_mapped_memory_ranges(iter::once((
-                    &self.inner.instance_buffer_memory,
-                    segment,
-                )))
+            device
+                .flush_mapped_memory_ranges(iter::once((&instance_buffer_bundle.memory, segment)))
                 .unwrap();
-            self.device.unmap_memory(&self.inner.instance_buffer_memory);
+            device.unmap_memory(&instance_buffer_bundle.memory);
         }
         Ok(())
+    }
+
+    fn write_instance_t_buffer(&mut self, start: usize, src: &[Mat4]) -> Result<(), ()> {
+        Self::write_instance_buffer(
+            &mut self.device,
+            &mut self.inner.instance_t_buffer_bundle,
+            start,
+            src,
+        )
+    }
+    fn write_instance_s_buffer(&mut self, start: usize, src: &[Rect]) -> Result<(), ()> {
+        Self::write_instance_buffer(
+            &mut self.device,
+            &mut self.inner.instance_s_buffer_bundle,
+            start,
+            src,
+        )
     }
 
     fn render(&mut self, image_index: usize) {
@@ -933,8 +946,9 @@ where
             per_fif.cmd_buffer.bind_vertex_buffers(
                 0,
                 vec![
-                    (&inner.vertex_buffer, hal::buffer::SubRange::WHOLE),
-                    (&inner.instance_buffer, hal::buffer::SubRange::WHOLE),
+                    (&inner.triangle_vertex_buffer_bundle.buffer, hal::buffer::SubRange::WHOLE),
+                    (&inner.instance_t_buffer_bundle.buffer, hal::buffer::SubRange::WHOLE),
+                    (&inner.instance_s_buffer_bundle.buffer, hal::buffer::SubRange::WHOLE),
                 ],
             );
             per_fif.cmd_buffer.bind_graphics_descriptor_sets(
@@ -997,8 +1011,9 @@ where
             let mut inner = ManuallyDrop::take(&mut self.inner);
             self.device.destroy_descriptor_pool(inner.desc_pool);
             self.device.destroy_descriptor_set_layout(inner.set_layout);
-            self.device.destroy_buffer(inner.vertex_buffer);
-            self.device.destroy_buffer(inner.instance_buffer);
+            self.device.device_destroy(inner.triangle_vertex_buffer_bundle);
+            self.device.device_destroy(inner.instance_t_buffer_bundle);
+            self.device.device_destroy(inner.instance_s_buffer_bundle);
             for depth_image_bundle in inner.tex_image_bundles {
                 self.device.device_destroy(depth_image_bundle);
             }
@@ -1012,8 +1027,6 @@ where
             self.device.destroy_command_pool(inner.cmd_pool);
             self.device.destroy_render_pass(inner.render_pass);
             inner.surface.unconfigure_swapchain(&self.device);
-            self.device.free_memory(inner.vertex_buffer_memory);
-            self.device.free_memory(inner.instance_buffer_memory);
             self.device.destroy_graphics_pipeline(inner.pipeline);
             self.device.destroy_pipeline_layout(inner.pipeline_layout);
             inner.instance.destroy_surface(inner.surface);
