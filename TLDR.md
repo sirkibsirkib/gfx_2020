@@ -16,3 +16,7 @@ Data does not move neatly through a chain of vertex->frag shader compute steps;
 rather, the gpu will execute your frag shader given Y'=interpolate([Y0, Y1, Y2], gl_position)
 for every fragment whose Y' represents the linear interpolation of corresponding 
 fields from Y0, Y1 and Y2 _inside_ the triangle with verts Y0.gl_position, Y1.gl_position, Y2.gl_position.
+
+
+NOTE: vertex shader output vec4 gl_Position = [x,y,w,z] 
+the gpu understands [x/w, y/w] as screen coords, and [z/w] as depth

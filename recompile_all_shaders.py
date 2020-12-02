@@ -8,7 +8,8 @@ for shader_file in shader_files:
     "glslc",             # shaderc glsl->spir-v binary
     shader_file,         # input glsl path
     "-o",                # output path flag
-    shader_file + ".spv" # output spir-v path
+    shader_file + ".spv",# output spir-v path
+    "-O"                 # optimize for performance
   ];
   subprocess.run(args)
 input("Blocking until newline...");

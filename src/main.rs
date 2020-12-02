@@ -60,7 +60,10 @@ struct VertexData {
 #[derive(Debug, Clone, Copy)]
 #[allow(non_snake_case)]
 struct InstanceData {
+    // consider: mat3
+    // consider: expose as a neater structure (rot, [x,y], [sx, sy])
     trans: ColMatData,
+    // TODO decouple
     tex_scissor: Rect,
 }
 
@@ -78,7 +81,7 @@ impl Default for Rect {
 
 mod vert_data_consts {
     use super::VertexData;
-    const D: f32 = 0.5;
+    const D: f32 = 0.5; // consider changing s.t. up is +y for later (more standard)
     const TL: VertexData = VertexData { a_Pos: [-D, -D], a_Uv: [0.0, 0.0] };
     const TR: VertexData = VertexData { a_Pos: [D, -D], a_Uv: [1.0, 0.0] };
     const BR: VertexData = VertexData { a_Pos: [D, D], a_Uv: [1.0, 1.0] };
@@ -87,6 +90,32 @@ mod vert_data_consts {
 }
 
 fn main() {
+    // let persp = Mat4::perspective_lh(1.5, 1., 0., 1.);
+    // let view = {
+    //     let eye = [0.; 3].into(); // camera position
+
+    //     let up = [0., 0., 1.].into();
+    //     // vertical up on screen
+
+    //     let center = eye + Vec3::from([0.0_f32.cos(), -1.0_f32.sin(), 0.]);
+    //     // rot=0. => [1., 0.]. rot=PI/2. => [0., -1.]
+    //     Mat4::look_at_lh(eye, center, up)
+    // };
+    // let t = persp * view;
+    // dbg!(persp, view, t);
+    // for i in 0..6 {
+    //     for j in 0..6 {
+    //         for k in 0..6 {
+    //             fn zop(x: u8) -> f32 {
+    //                 (x as f32) - 3.
+    //             }
+    //             let vec = t * glam::Vec4::from([zop(i), zop(j), zop(k), 1.]);
+    //             println!("{:?}. z/w={}", vec, vec[2] / vec[3]);
+    //         }
+    //     }
+    // }
+    // return;
+
     let event_loop = winit::event_loop::EventLoop::new();
 
     let wb = winit::window::WindowBuilder::new()
@@ -391,9 +420,22 @@ where
             device.bind_buffer_memory(&memory, 0, &mut instance_buffer).unwrap();
             let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
             let typed_mapping: &mut [InstanceData; MAX_INSTANCES] = mem::transmute(mapping);
+            // for instance in typed_mapping {
+            //     let trans = (Mat4::from_translation(offset)
+            //         * xy_trans
+            //         * Mat4::from_translation([0., 0., -0.5].into())
+            //         * Mat4::from_scale([0.; 3].into()))
+            //     .into();
+
+            //     const TILE_SIZE: [f32; 2] = [1. / 11., 1. / 5.];
+            //     let tex_scissor = Rect { top_left: [0.; 2], size: [0.; 2] };
+            //     InstanceData { trans, tex_scissor }
+            // }
             fn init(typed_mapping: &mut [InstanceData], offset: Vec3) {
                 const TILE_SIZE: [f32; 2] = [1. / 11., 1. / 5.];
                 let around_x_not_y = [true, true, true, true, false, false];
+                // through z    throught x   throught y
+                // top, bottom, front, back, left, right
                 let around_rot = [0., PI, PI / 2., -PI / 2., PI / 2., -PI / 2.];
                 let z_rot = [0., 0., 0., PI, PI / 2., PI * 1.5];
                 let tex_tl_z = [0, 2, 3, 3, 3, 3];
@@ -412,7 +454,7 @@ where
                     *typed_mapping = InstanceData {
                         trans,
                         tex_scissor: Rect {
-                            top_left: [TILE_SIZE[0] * tex_tl_z[i] as f32, 0.],
+                            top_left: [TILE_SIZE[0] * tex_tl_z[i] as f32, TILE_SIZE[0] * i as f32],
                             size: TILE_SIZE,
                         },
                     };
@@ -649,9 +691,9 @@ where
                 samples: 1,
                 ops: pass::AttachmentOps {
                     load: pass::AttachmentLoadOp::Clear,
-                    store: pass::AttachmentStoreOp::DontCare,
+                    store: pass::AttachmentStoreOp::Store,
                 },
-                stencil_ops: pass::AttachmentOps::DONT_CARE, // PRESERVE ?
+                stencil_ops: pass::AttachmentOps::PRESERVE, // PRESERVE ?
                 layouts: i::Layout::Undefined..i::Layout::DepthStencilAttachmentOptimal,
             };
             let subpass = pass::SubpassDesc {
@@ -704,13 +746,15 @@ where
         let pipeline = {
             let vs_module = {
                 let spirv =
-                    gfx_auxil::read_spirv(Cursor::new(&include_bytes!("data/quad.vert.spv")[..]))
+                    gfx_auxil::read_spirv(std::fs::File::open("./src/data/quad.vert.spv").unwrap())
+                        // gfx_auxil::read_spirv(Cursor::new(&include_bytes!("data/quad.vert.spv")[..]))
                         .unwrap();
                 unsafe { device.create_shader_module(&spirv) }.unwrap()
             };
             let fs_module = {
                 let spirv =
-                    gfx_auxil::read_spirv(Cursor::new(&include_bytes!("./data/quad.frag.spv")[..]))
+                    gfx_auxil::read_spirv(std::fs::File::open("./src/data/quad.frag.spv").unwrap())
+                        // gfx_auxil::read_spirv(Cursor::new(&include_bytes!("./data/quad.frag.spv")[..]))
                         .unwrap();
                 unsafe { device.create_shader_module(&spirv) }.unwrap()
             };
@@ -790,7 +834,7 @@ where
                     &pipeline_layout,
                     Subpass { index: 0, main_pass: &render_pass },
                 );
-                // pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
+                pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
                 pipeline_desc.depth_stencil = pso::DepthStencilDesc {
                     depth: Some(pso::DepthTest { fun: pso::Comparison::LessEqual, write: true }),
                     depth_bounds: false,
@@ -991,7 +1035,8 @@ where
                 ShaderStageFlags::VERTEX,
                 0,
                 ColMatData::from({
-                    let persp = Mat4::perspective_lh(1.5, 1., 0., 1.);
+                    // let persp = Mat4::perspective_lh(1.5, 1., 0., 10.);
+                    let persp = Mat4::identity();
                     let view = {
                         let eye = self.entity.pos.into(); // camera position
                         let up = [0., 0., 1.].into(); // vertical up on screen
@@ -1002,7 +1047,8 @@ where
                     // Mat4::from_scale([0.1, 0.1, 0.1].into())
                     // let view = Mat4::from_translation(self.entity.pos.into());
                     // let rot_up = Mat4::from_rotation_y(-PI / 2.);
-                    persp * view
+                    persp * view * Mat4::from_scale([0.6, 0.6, 0.6].into())
+
                     // Mat4::identity()
                 })
                 .as_u32_slice(),
