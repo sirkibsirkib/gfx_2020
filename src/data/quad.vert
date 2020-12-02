@@ -30,6 +30,5 @@ void main() {
     mat4 inst = mat4(inst_0, inst_1, inst_2 ,inst_3);
     mat4 view = mat4(pc.trans_0, pc.trans_1, pc.trans_2, pc.trans_3);
     gl_Position = view * inst * pos;
-    gl_Position.z = gl_Position.w * gl_Position.w / 100.0;
 }
 

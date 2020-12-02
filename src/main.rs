@@ -19,9 +19,10 @@ use glam::{Mat4, Vec3};
 use std::{
     borrow::Borrow,
     f32::consts::PI,
-    io::Cursor,
+    // io::Cursor,
     iter,
     mem::{self, ManuallyDrop},
+    path::Path,
     ptr,
 };
 
@@ -90,34 +91,7 @@ mod vert_data_consts {
 }
 
 fn main() {
-    // let persp = Mat4::perspective_lh(1.5, 1., 0., 1.);
-    // let view = {
-    //     let eye = [0.; 3].into(); // camera position
-
-    //     let up = [0., 0., 1.].into();
-    //     // vertical up on screen
-
-    //     let center = eye + Vec3::from([0.0_f32.cos(), -1.0_f32.sin(), 0.]);
-    //     // rot=0. => [1., 0.]. rot=PI/2. => [0., -1.]
-    //     Mat4::look_at_lh(eye, center, up)
-    // };
-    // let t = persp * view;
-    // dbg!(persp, view, t);
-    // for i in 0..6 {
-    //     for j in 0..6 {
-    //         for k in 0..6 {
-    //             fn zop(x: u8) -> f32 {
-    //                 (x as f32) - 3.
-    //             }
-    //             let vec = t * glam::Vec4::from([zop(i), zop(j), zop(k), 1.]);
-    //             println!("{:?}. z/w={}", vec, vec[2] / vec[3]);
-    //         }
-    //     }
-    // }
-    // return;
-
     let event_loop = winit::event_loop::EventLoop::new();
-
     let wb = winit::window::WindowBuilder::new()
         .with_resizable(false)
         .with_min_inner_size(winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(64.0, 64.0)))
@@ -133,16 +107,14 @@ fn main() {
     window.set_cursor_visible(false);
     let instance = back::Instance::create("gfx-rs quad", 1).expect("Failed to create an instance!");
     let surface = unsafe { instance.create_surface(&window).expect("Failed to create a surface!") };
-
-    for adapter in instance.enumerate_adapters().iter() {
-        // DEBUG
-        println!("{:?}", adapter.info);
-    }
-
     let adapter = instance.enumerate_adapters().into_iter().next().unwrap();
     let mut renderer = Renderer::new(instance, surface, adapter);
 
-    renderer.render();
+    let img_rgba =
+        image::io::Reader::open("./src/data/logo.png").unwrap().decode().unwrap().to_rgba();
+    renderer.add_image(img_rgba).unwrap();
+
+    renderer.render(0);
 
     // It is important that the closure move captures the Renderer,
     // otherwise it will not be dropped when the event loop exits.
@@ -162,47 +134,12 @@ fn main() {
                     Some(winit::event::VirtualKeyCode::Escape) => {
                         *control_flow = winit::event_loop::ControlFlow::Exit
                     }
-                    Some(winit::event::VirtualKeyCode::W) => {
-                        renderer.entity.move_relative(0., MOV_DIST);
-                    }
-                    Some(winit::event::VirtualKeyCode::S) => {
-                        renderer.entity.move_relative(PI, MOV_DIST);
-                    }
-                    Some(winit::event::VirtualKeyCode::A) => {
-                        renderer.entity.move_relative(PI / 2., MOV_DIST);
-                    }
-                    Some(winit::event::VirtualKeyCode::D) => {
-                        renderer.entity.move_relative(PI * 3. / 2., MOV_DIST);
-                    }
-                    Some(winit::event::VirtualKeyCode::Space) => {
-                        renderer.entity.pos[2] -= MOV_DIST;
-                    }
-                    Some(winit::event::VirtualKeyCode::LControl) => {
-                        renderer.entity.pos[2] += MOV_DIST;
-                    }
                     _ => {}
                 },
                 winit::event::WindowEvent::Resized(_) => unreachable!(),
-                winit::event::WindowEvent::MouseWheel { delta, .. } => {
-                    if let winit::event::MouseScrollDelta::LineDelta(_x, y) = delta {
-                        const MUL: f32 = 0.03;
-                        renderer.entity.pos[2] += MUL * y;
-                    }
-                }
                 _ => {}
             },
-            winit::event::Event::DeviceEvent { event, .. } => match event {
-                winit::event::DeviceEvent::MouseMotion { delta: (x, _y) } => {
-                    renderer.entity.rot -= 0.003 * x as f32;
-                    window
-                        .set_cursor_position(winit::dpi::Position::Logical(
-                            winit::dpi::LogicalPosition { x: 400., y: 400. },
-                        ))
-                        .unwrap();
-                }
-                _ => {}
-            },
-            winit::event::Event::RedrawEventsCleared => renderer.render(),
+            winit::event::Event::RedrawEventsCleared => renderer.render(0),
             _ => {}
         }
     });
@@ -217,24 +154,10 @@ struct Renderer<B: hal::Backend> {
     queue_group: QueueGroup<B>,
     adapter: hal::adapter::Adapter<B>,
     format: hal::format::Format,
-    // dimensions: window::Extent2D,
     viewport: pso::Viewport,
     desc_set: B::DescriptorSet,
     inner: ManuallyDrop<RendererInner<B>>,
-    entity: Entity,
-}
-
-#[derive(Debug, Default)]
-struct Entity {
-    pos: [f32; 3],
-    rot: f32,
-}
-impl Entity {
-    fn move_relative(&mut self, z_angle_relative: f32, distance: f32) {
-        let angle = self.rot + z_angle_relative;
-        self.pos[0] += angle.cos() * distance; // +x when angle is 0.
-        self.pos[1] -= angle.sin() * distance; // -y when angle is PI/2.
-    }
+    upload_type: hal::MemoryTypeId,
 }
 
 /// Things that must be manually dropped, because they correspond to Gfx resources
@@ -254,17 +177,17 @@ struct RendererInner<B: hal::Backend> {
     set_layout: B::DescriptorSetLayout,
     vertex_buffer: B::Buffer,
     instance_buffer: B::Buffer,
-    image_upload_buffer: B::Buffer,
-    image_logo: B::Image,
-    image_view: B::ImageView,
     vertex_buffer_memory: B::Memory,
     instance_buffer_memory: B::Memory,
-    image_memory: B::Memory,
-    image_upload_memory: B::Memory,
     sampler: B::Sampler,
-    // depth_image: B::Image,
-    // depth_memory: B::Memory,
-    // depth_image_view: B::ImageView,
+    texs: Vec<Tex<B>>,
+}
+
+#[derive(Debug)]
+struct Tex<B: hal::Backend> {
+    image: B::Image,
+    memory: B::Memory,
+    view: B::ImageView,
 }
 
 const fn padded_len(n: usize, non_coherent_atom_size: usize) -> usize {
@@ -275,6 +198,157 @@ impl<B> Renderer<B>
 where
     B: hal::Backend,
 {
+    fn add_image(
+        &mut self,
+        img_rgba: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+    ) -> std::io::Result<usize> {
+        let memory_types = self.adapter.physical_device.memory_properties().memory_types;
+        let limits = self.adapter.physical_device.limits();
+
+        let mut fence = self.device.create_fence(false).expect("Could not create fence");
+        let (width, height) = img_rgba.dimensions();
+        let image_stride = 4usize;
+        let row_pitch = {
+            let row_alignment_mask = limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+            (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask
+        };
+
+        let mut image_upload_buffer = {
+            let upload_size = (height * row_pitch) as usize;
+            unsafe {
+                self.device.create_buffer(
+                    padded_len(upload_size, limits.non_coherent_atom_size) as u64,
+                    hal::buffer::Usage::TRANSFER_SRC,
+                )
+            }
+            .unwrap()
+        };
+        let image_mem_reqs = unsafe { self.device.get_buffer_requirements(&image_upload_buffer) };
+
+        // copy image data into staging buffer
+        let image_upload_memory = unsafe {
+            let memory =
+                self.device.allocate_memory(self.upload_type, image_mem_reqs.size).unwrap();
+            self.device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
+            let mapping = self.device.map_memory(&memory, m::Segment::ALL).unwrap();
+            for y in 0..height as usize {
+                let row = &(*img_rgba)[y * (width as usize) * image_stride
+                    ..(y + 1) * (width as usize) * image_stride];
+                ptr::copy_nonoverlapping(
+                    row.as_ptr(),
+                    mapping.offset(y as isize * row_pitch as isize),
+                    width as usize * image_stride,
+                );
+            }
+            self.device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
+            self.device.unmap_memory(&memory);
+            memory
+        };
+        let mut image = unsafe {
+            self.device.create_image(
+                i::Kind::D2(width as i::Size, height as i::Size, 1, 1),
+                1,
+                ColorFormat::SELF,
+                i::Tiling::Optimal,
+                i::Usage::TRANSFER_DST | i::Usage::SAMPLED,
+                i::ViewCapabilities::empty(),
+            )
+        }
+        .unwrap();
+        let memory = {
+            let image_req = unsafe { self.device.get_image_requirements(&image) };
+            let device_type = memory_types
+                .iter()
+                .enumerate()
+                .position(|(id, memory_type)| {
+                    image_req.type_mask & (1 << id) != 0
+                        && memory_type.properties.contains(m::Properties::DEVICE_LOCAL)
+                })
+                .unwrap()
+                .into();
+            unsafe { self.device.allocate_memory(device_type, image_req.size) }.unwrap()
+        };
+
+        unsafe { self.device.bind_image_memory(&memory, 0, &mut image) }.unwrap();
+        let view = unsafe {
+            self.device.create_image_view(
+                &image,
+                i::ViewKind::D2,
+                ColorFormat::SELF,
+                Swizzle::NO,
+                i::SubresourceRange { aspects: f::Aspects::COLOR, ..Default::default() },
+            )
+        }
+        .unwrap();
+        unsafe {
+            self.device.write_descriptor_sets(iter::once(pso::DescriptorSetWrite {
+                set: &self.desc_set,
+                binding: 0,
+                array_offset: 0,
+                descriptors: [
+                    pso::Descriptor::Image(&view, i::Layout::ShaderReadOnlyOptimal),
+                    pso::Descriptor::Sampler(&self.inner.sampler),
+                ]
+                .iter(),
+            }));
+            let mut cmd_buffer = self.inner.cmd_pool.allocate_one(command::Level::Primary);
+            cmd_buffer.begin_primary(command::CommandBufferFlags::ONE_TIME_SUBMIT);
+
+            let image_barrier = m::Barrier::Image {
+                states: (i::Access::empty(), i::Layout::Undefined)
+                    ..(i::Access::TRANSFER_WRITE, i::Layout::TransferDstOptimal),
+                target: &image,
+                families: None,
+                range: i::SubresourceRange { aspects: f::Aspects::COLOR, ..Default::default() },
+            };
+
+            cmd_buffer.pipeline_barrier(
+                PipelineStage::TOP_OF_PIPE..PipelineStage::TRANSFER,
+                m::Dependencies::empty(),
+                &[image_barrier],
+            );
+
+            cmd_buffer.copy_buffer_to_image(
+                &image_upload_buffer,
+                &image,
+                i::Layout::TransferDstOptimal,
+                &[command::BufferImageCopy {
+                    buffer_offset: 0,
+                    buffer_width: row_pitch / (image_stride as u32),
+                    buffer_height: height as u32,
+                    image_layers: i::SubresourceLayers {
+                        aspects: f::Aspects::COLOR,
+                        level: 0,
+                        layers: 0..1,
+                    },
+                    image_offset: i::Offset { x: 0, y: 0, z: 0 },
+                    image_extent: i::Extent { width, height, depth: 1 },
+                }],
+            );
+            let image_barrier = m::Barrier::Image {
+                states: (i::Access::TRANSFER_WRITE, i::Layout::TransferDstOptimal)
+                    ..(i::Access::SHADER_READ, i::Layout::ShaderReadOnlyOptimal),
+                target: &image,
+                families: None,
+                range: i::SubresourceRange { aspects: f::Aspects::COLOR, ..Default::default() },
+            };
+            cmd_buffer.pipeline_barrier(
+                PipelineStage::TRANSFER..PipelineStage::FRAGMENT_SHADER,
+                m::Dependencies::empty(),
+                &[image_barrier],
+            );
+            cmd_buffer.finish();
+            self.queue_group.queues[0]
+                .submit_without_semaphores(Some(&cmd_buffer), Some(&mut fence));
+            self.device.wait_for_fence(&fence, !0).expect("Can't wait for fence");
+            drop(img_rgba);
+        }
+        unsafe { self.device.free_memory(image_upload_memory) };
+        let tex = Tex { image, memory, view };
+        self.inner.texs.push(tex);
+        Ok(self.inner.texs.len()) // TODO
+    }
+
     fn new(
         instance: B::Instance,
         mut surface: B::Surface,
@@ -295,7 +369,7 @@ where
             println!("fam {}: {:#?}", i, fam);
         }
         dbg!(&memory_types, &limits, &family);
-        let (mut queue_group, device) = {
+        let (queue_group, device) = {
             let mut gpu = unsafe {
                 adapter.physical_device.open(&[(family, &[1.0])], hal::Features::empty()).unwrap()
             };
@@ -358,7 +432,7 @@ where
                 .create_command_pool(queue_group.family, hal::pool::CommandPoolCreateFlags::empty())
         }
         .expect("Can't create command pool");
-        let mut fence = device.create_fence(false).expect("Could not create fence");
+        let fence = device.create_fence(false).expect("Could not create fence");
 
         ///////////////////////////////////////////////////////
         // ALLOCATE AND INIT VERTEX BUFFER
@@ -420,50 +494,26 @@ where
             device.bind_buffer_memory(&memory, 0, &mut instance_buffer).unwrap();
             let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
             let typed_mapping: &mut [InstanceData; MAX_INSTANCES] = mem::transmute(mapping);
-            // for instance in typed_mapping {
-            //     let trans = (Mat4::from_translation(offset)
-            //         * xy_trans
-            //         * Mat4::from_translation([0., 0., -0.5].into())
-            //         * Mat4::from_scale([0.; 3].into()))
-            //     .into();
-
-            //     const TILE_SIZE: [f32; 2] = [1. / 11., 1. / 5.];
-            //     let tex_scissor = Rect { top_left: [0.; 2], size: [0.; 2] };
-            //     InstanceData { trans, tex_scissor }
-            // }
-            fn init(typed_mapping: &mut [InstanceData], offset: Vec3) {
+            for (i, instance) in typed_mapping.iter_mut().enumerate() {
+                let trans = {
+                    let moved = Mat4::from_translation(
+                        [
+                            i as f32 / 10., //
+                            i as f32 / 46., //
+                            (i % 3) as f32 / 3.,
+                        ]
+                        .into(),
+                    );
+                    let scale = Mat4::from_scale([0.2; 3].into());
+                    (moved * scale).into()
+                };
                 const TILE_SIZE: [f32; 2] = [1. / 11., 1. / 5.];
-                let around_x_not_y = [true, true, true, true, false, false];
-                // through z    throught x   throught y
-                // top, bottom, front, back, left, right
-                let around_rot = [0., PI, PI / 2., -PI / 2., PI / 2., -PI / 2.];
-                let z_rot = [0., 0., 0., PI, PI / 2., PI * 1.5];
-                let tex_tl_z = [0, 2, 3, 3, 3, 3];
-                for (i, typed_mapping) in typed_mapping.into_iter().enumerate() {
-                    let arot = around_rot[i];
-                    let xy_trans = if around_x_not_y[i] {
-                        Mat4::from_rotation_x(arot)
-                    } else {
-                        Mat4::from_rotation_y(arot)
-                    };
-                    let trans = (Mat4::from_translation(offset)
-                        * xy_trans
-                        * Mat4::from_translation([0., 0., -0.5].into())
-                        * Mat4::from_rotation_z(z_rot[i]))
-                    .into();
-                    *typed_mapping = InstanceData {
-                        trans,
-                        tex_scissor: Rect {
-                            top_left: [TILE_SIZE[0] * tex_tl_z[i] as f32, TILE_SIZE[0] * i as f32],
-                            size: TILE_SIZE,
-                        },
-                    };
-                }
-            };
-            init(&mut typed_mapping[0..6], [0., 0., 0.].into());
-            init(&mut typed_mapping[6..12], [2., 0., 0.].into());
-            // let sample_distribution = rand::distributions::uniform::Uniform::new(0., 1.);
-            // let mut rng = rand::thread_rng();
+                let tex_scissor = {
+                    let top_left = [i as f32 * TILE_SIZE[0], 0. * TILE_SIZE[1]];
+                    Rect { top_left, size: TILE_SIZE }
+                };
+                *instance = InstanceData { trans, tex_scissor };
+            }
             device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
             device.unmap_memory(&memory);
             memory
@@ -471,187 +521,147 @@ where
 
         ///////////////////////////////////////////
         ////// LOAD, ALLOCATE & INIT IMAGE TEX
-        let img_rgba =
-            image::io::Reader::open("./src/data/logo.png").unwrap().decode().unwrap().to_rgba();
-        let (width, height) = img_rgba.dimensions();
-        let image_stride = 4usize;
-        let row_pitch = {
-            let row_alignment_mask = limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
-            (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask
-        };
+        // let img_rgba =
+        //     image::io::Reader::open("./src/data/logo.png").unwrap().decode().unwrap().to_rgba();
+        // let (width, height) = img_rgba.dimensions();
+        // let image_stride = 4usize;
+        // let row_pitch = {
+        //     let row_alignment_mask = limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+        //     (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask
+        // };
 
-        let mut image_upload_buffer = {
-            let upload_size = (height * row_pitch) as usize;
-            unsafe {
-                device.create_buffer(
-                    padded_len(upload_size, limits.non_coherent_atom_size) as u64,
-                    hal::buffer::Usage::TRANSFER_SRC,
-                )
-            }
-            .unwrap()
-        };
-        let image_mem_reqs = unsafe { device.get_buffer_requirements(&image_upload_buffer) };
+        // let mut image_upload_buffer = {
+        //     let upload_size = (height * row_pitch) as usize;
+        //     unsafe {
+        //         device.create_buffer(
+        //             padded_len(upload_size, limits.non_coherent_atom_size) as u64,
+        //             hal::buffer::Usage::TRANSFER_SRC,
+        //         )
+        //     }
+        //     .unwrap()
+        // };
+        // let image_mem_reqs = unsafe { device.get_buffer_requirements(&image_upload_buffer) };
 
-        // copy image data into staging buffer
-        let image_upload_memory = unsafe {
-            let memory = device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
-            device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
-            let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
-            for y in 0..height as usize {
-                let row = &(*img_rgba)[y * (width as usize) * image_stride
-                    ..(y + 1) * (width as usize) * image_stride];
-                ptr::copy_nonoverlapping(
-                    row.as_ptr(),
-                    mapping.offset(y as isize * row_pitch as isize),
-                    width as usize * image_stride,
-                );
-            }
-            device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
-            device.unmap_memory(&memory);
-            memory
-        };
-        let mut image_logo = unsafe {
-            device.create_image(
-                i::Kind::D2(width as i::Size, height as i::Size, 1, 1),
-                1,
-                ColorFormat::SELF,
-                i::Tiling::Optimal,
-                i::Usage::TRANSFER_DST | i::Usage::SAMPLED,
-                i::ViewCapabilities::empty(),
-            )
-        }
-        .unwrap();
-        let image_memory = {
-            let image_req = unsafe { device.get_image_requirements(&image_logo) };
-            let device_type = memory_types
-                .iter()
-                .enumerate()
-                .position(|(id, memory_type)| {
-                    image_req.type_mask & (1 << id) != 0
-                        && memory_type.properties.contains(m::Properties::DEVICE_LOCAL)
-                })
-                .unwrap()
-                .into();
-            unsafe { device.allocate_memory(device_type, image_req.size) }.unwrap()
-        };
-
-        unsafe { device.bind_image_memory(&image_memory, 0, &mut image_logo) }.unwrap();
-        let image_view = unsafe {
-            device.create_image_view(
-                &image_logo,
-                i::ViewKind::D2,
-                ColorFormat::SELF,
-                Swizzle::NO,
-                i::SubresourceRange { aspects: f::Aspects::COLOR, ..Default::default() },
-            )
-        }
-        .unwrap();
-        unsafe {
-            device.write_descriptor_sets(iter::once(pso::DescriptorSetWrite {
-                set: &desc_set,
-                binding: 0,
-                array_offset: 0,
-                descriptors: [
-                    pso::Descriptor::Image(&image_view, i::Layout::ShaderReadOnlyOptimal),
-                    pso::Descriptor::Sampler(&sampler),
-                ]
-                .iter(),
-            }));
-        }
-        unsafe {
-            let mut cmd_buffer = cmd_pool.allocate_one(command::Level::Primary);
-            cmd_buffer.begin_primary(command::CommandBufferFlags::ONE_TIME_SUBMIT);
-
-            let image_barrier = m::Barrier::Image {
-                states: (i::Access::empty(), i::Layout::Undefined)
-                    ..(i::Access::TRANSFER_WRITE, i::Layout::TransferDstOptimal),
-                target: &image_logo,
-                families: None,
-                range: i::SubresourceRange { aspects: f::Aspects::COLOR, ..Default::default() },
-            };
-
-            cmd_buffer.pipeline_barrier(
-                PipelineStage::TOP_OF_PIPE..PipelineStage::TRANSFER,
-                m::Dependencies::empty(),
-                &[image_barrier],
-            );
-
-            cmd_buffer.copy_buffer_to_image(
-                &image_upload_buffer,
-                &image_logo,
-                i::Layout::TransferDstOptimal,
-                &[command::BufferImageCopy {
-                    buffer_offset: 0,
-                    buffer_width: row_pitch / (image_stride as u32),
-                    buffer_height: height as u32,
-                    image_layers: i::SubresourceLayers {
-                        aspects: f::Aspects::COLOR,
-                        level: 0,
-                        layers: 0..1,
-                    },
-                    image_offset: i::Offset { x: 0, y: 0, z: 0 },
-                    image_extent: i::Extent { width, height, depth: 1 },
-                }],
-            );
-
-            let image_barrier = m::Barrier::Image {
-                states: (i::Access::TRANSFER_WRITE, i::Layout::TransferDstOptimal)
-                    ..(i::Access::SHADER_READ, i::Layout::ShaderReadOnlyOptimal),
-                target: &image_logo,
-                families: None,
-                range: i::SubresourceRange { aspects: f::Aspects::COLOR, ..Default::default() },
-            };
-            cmd_buffer.pipeline_barrier(
-                PipelineStage::TRANSFER..PipelineStage::FRAGMENT_SHADER,
-                m::Dependencies::empty(),
-                &[image_barrier],
-            );
-            cmd_buffer.finish();
-            queue_group.queues[0].submit_without_semaphores(Some(&cmd_buffer), Some(&mut fence));
-            device.wait_for_fence(&fence, !0).expect("Can't wait for fence");
-            drop(img_rgba);
-        }
-
-        /////////// DEPTH
-
-        // let mut depth_image = unsafe {
+        // // copy image data into staging buffer
+        // let image_upload_memory = unsafe {
+        //     let memory = device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
+        //     device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
+        //     let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
+        //     for y in 0..height as usize {
+        //         let row = &(*img_rgba)[y * (width as usize) * image_stride
+        //             ..(y + 1) * (width as usize) * image_stride];
+        //         ptr::copy_nonoverlapping(
+        //             row.as_ptr(),
+        //             mapping.offset(y as isize * row_pitch as isize),
+        //             width as usize * image_stride,
+        //         );
+        //     }
+        //     device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
+        //     device.unmap_memory(&memory);
+        //     memory
+        // };
+        // let mut image_logo = unsafe {
         //     device.create_image(
         //         i::Kind::D2(width as i::Size, height as i::Size, 1, 1),
         //         1,
-        //         f::Format::D32Sfloat,
+        //         ColorFormat::SELF,
         //         i::Tiling::Optimal,
-        //         i::Usage::DEPTH_STENCIL_ATTACHMENT,
+        //         i::Usage::TRANSFER_DST | i::Usage::SAMPLED,
         //         i::ViewCapabilities::empty(),
         //     )
         // }
         // .unwrap();
+        // let image_memory = {
+        //     let image_req = unsafe { device.get_image_requirements(&image_logo) };
+        //     let device_type = memory_types
+        //         .iter()
+        //         .enumerate()
+        //         .position(|(id, memory_type)| {
+        //             image_req.type_mask & (1 << id) != 0
+        //                 && memory_type.properties.contains(m::Properties::DEVICE_LOCAL)
+        //         })
+        //         .unwrap()
+        //         .into();
+        //     unsafe { device.allocate_memory(device_type, image_req.size) }.unwrap()
+        // };
 
-        // let depth_requirements = unsafe { device.get_image_requirements(&depth_image) };
-        // let depth_image_type = memory_types
-        //     .iter()
-        //     .enumerate()
-        //     .position(|(id, mem_type)| {
-        //         // type_mask is a bit field where each bit represents a memory type. If the bit is set
-        //         // to 1 it means we can use that type for our buffer. So this code finds the first
-        //         // memory type that has a `1` (or, is allowed), and is visible to the CPU.
-        //         depth_requirements.type_mask & (1 << id) != 0
-        //             && mem_type.properties.contains(m::Properties::DEVICE_LOCAL)
-        //     })
-        //     .unwrap()
-        //     .into();
-        // let depth_memory =
-        //     unsafe { device.allocate_memory(depth_image_type, depth_requirements.size) }.unwrap();
-        // unsafe { device.bind_image_memory(&depth_memory, 0, &mut depth_image) }.unwrap();
-        // let depth_image_view = unsafe {
+        // unsafe { device.bind_image_memory(&image_memory, 0, &mut image_logo) }.unwrap();
+        // let image_view = unsafe {
         //     device.create_image_view(
-        //         &depth_image,
-        //         gfx_hal::image::ViewKind::D2,
-        //         f::Format::D32Sfloat,
-        //         gfx_hal::format::Swizzle::NO,
-        //         i::SubresourceRange { aspects: f::Aspects::DEPTH, ..Default::default() },
+        //         &image_logo,
+        //         i::ViewKind::D2,
+        //         ColorFormat::SELF,
+        //         Swizzle::NO,
+        //         i::SubresourceRange { aspects: f::Aspects::COLOR, ..Default::default() },
         //     )
         // }
         // .unwrap();
+        // unsafe {
+        //     device.write_descriptor_sets(iter::once(pso::DescriptorSetWrite {
+        //         set: &desc_set,
+        //         binding: 0,
+        //         array_offset: 0,
+        //         descriptors: [
+        //             pso::Descriptor::Image(&image_view, i::Layout::ShaderReadOnlyOptimal),
+        //             pso::Descriptor::Sampler(&sampler),
+        //         ]
+        //         .iter(),
+        //     }));
+        // }
+        // unsafe {
+        //     let mut cmd_buffer = cmd_pool.allocate_one(command::Level::Primary);
+        //     cmd_buffer.begin_primary(command::CommandBufferFlags::ONE_TIME_SUBMIT);
+
+        //     let image_barrier = m::Barrier::Image {
+        //         states: (i::Access::empty(), i::Layout::Undefined)
+        //             ..(i::Access::TRANSFER_WRITE, i::Layout::TransferDstOptimal),
+        //         target: &image_logo,
+        //         families: None,
+        //         range: i::SubresourceRange { aspects: f::Aspects::COLOR, ..Default::default() },
+        //     };
+
+        //     cmd_buffer.pipeline_barrier(
+        //         PipelineStage::TOP_OF_PIPE..PipelineStage::TRANSFER,
+        //         m::Dependencies::empty(),
+        //         &[image_barrier],
+        //     );
+
+        //     cmd_buffer.copy_buffer_to_image(
+        //         &image_upload_buffer,
+        //         &image_logo,
+        //         i::Layout::TransferDstOptimal,
+        //         &[command::BufferImageCopy {
+        //             buffer_offset: 0,
+        //             buffer_width: row_pitch / (image_stride as u32),
+        //             buffer_height: height as u32,
+        //             image_layers: i::SubresourceLayers {
+        //                 aspects: f::Aspects::COLOR,
+        //                 level: 0,
+        //                 layers: 0..1,
+        //             },
+        //             image_offset: i::Offset { x: 0, y: 0, z: 0 },
+        //             image_extent: i::Extent { width, height, depth: 1 },
+        //         }],
+        //     );
+
+        //     let image_barrier = m::Barrier::Image {
+        //         states: (i::Access::TRANSFER_WRITE, i::Layout::TransferDstOptimal)
+        //             ..(i::Access::SHADER_READ, i::Layout::ShaderReadOnlyOptimal),
+        //         target: &image_logo,
+        //         families: None,
+        //         range: i::SubresourceRange { aspects: f::Aspects::COLOR, ..Default::default() },
+        //     };
+        //     cmd_buffer.pipeline_barrier(
+        //         PipelineStage::TRANSFER..PipelineStage::FRAGMENT_SHADER,
+        //         m::Dependencies::empty(),
+        //         &[image_barrier],
+        //     );
+        //     cmd_buffer.finish();
+        //     queue_group.queues[0].submit_without_semaphores(Some(&cmd_buffer), Some(&mut fence));
+        //     device.wait_for_fence(&fence, !0).expect("Can't wait for fence");
+        //     drop(img_rgba);
+        // }
+        // unsafe { device.free_memory(image_upload_memory) };
 
         /////////// FINISHING UP
 
@@ -693,7 +703,7 @@ where
                     load: pass::AttachmentLoadOp::Clear,
                     store: pass::AttachmentStoreOp::Store,
                 },
-                stencil_ops: pass::AttachmentOps::PRESERVE, // PRESERVE ?
+                stencil_ops: pass::AttachmentOps::DONT_CARE, // PRESERVE ?
                 layouts: i::Layout::Undefined..i::Layout::DepthStencilAttachmentOptimal,
             };
             let subpass = pass::SubpassDesc {
@@ -703,30 +713,36 @@ where
                 resolves: &[],
                 preserves: &[],
             };
-            // let in_dependency = pass::SubpassDependency {
-            //     passes: None..Some(0),
-            //     stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT
-            //         ..PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS,
-            //     accesses: i::Access::empty()
-            //         ..(i::Access::COLOR_ATTACHMENT_READ
-            //             | i::Access::COLOR_ATTACHMENT_WRITE
-            //             | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
-            //             | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
-            //     flags: m::Dependencies::empty(),
-            // };
-            // let out_dependency = pass::SubpassDependency {
-            //     passes: Some(0)..None,
-            //     stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS
-            //         ..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
-            //     accesses: (i::Access::COLOR_ATTACHMENT_READ
-            //         | i::Access::COLOR_ATTACHMENT_WRITE
-            //         | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
-            //         | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE)
-            //         ..i::Access::empty(),
-            //     flags: m::Dependencies::empty(),
-            // };
-            unsafe { device.create_render_pass(&[attachment, depth_attachment], &[subpass], &[]) }
-                .expect("Can't create render pass")
+            let in_dependency = pass::SubpassDependency {
+                passes: None..Some(0),
+                stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT
+                    ..PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS,
+                accesses: i::Access::empty()
+                    ..(i::Access::COLOR_ATTACHMENT_READ
+                        | i::Access::COLOR_ATTACHMENT_WRITE
+                        | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
+                        | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE),
+                flags: m::Dependencies::empty(),
+            };
+            let out_dependency = pass::SubpassDependency {
+                passes: Some(0)..None,
+                stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT | PipelineStage::EARLY_FRAGMENT_TESTS
+                    ..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
+                accesses: (i::Access::COLOR_ATTACHMENT_READ
+                    | i::Access::COLOR_ATTACHMENT_WRITE
+                    | i::Access::DEPTH_STENCIL_ATTACHMENT_READ
+                    | i::Access::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                    ..i::Access::empty(),
+                flags: m::Dependencies::empty(),
+            };
+            unsafe {
+                device.create_render_pass(
+                    &[attachment, depth_attachment],
+                    &[subpass],
+                    &[in_dependency, out_dependency],
+                )
+            }
+            .expect("Can't create render pass")
         };
 
         let semaphore = device.create_semaphore().expect("Could not create semaphore");
@@ -860,11 +876,11 @@ where
         };
 
         let me = Renderer {
+            upload_type,
             device,
             queue_group,
             adapter,
             format,
-            // dimensions: DIMS,
             viewport,
             desc_set,
             inner: ManuallyDrop::new(RendererInner {
@@ -875,64 +891,25 @@ where
                 set_layout,
                 vertex_buffer,
                 instance_buffer,
-                image_upload_buffer,
                 pipeline,
                 pipeline_layout,
-                image_logo,
-                image_view,
                 vertex_buffer_memory,
                 instance_buffer_memory,
-                image_memory,
-                image_upload_memory,
                 sampler,
                 semaphore,
                 fence,
                 cmd_pool,
                 cmd_buffer,
-                // depth_image,
-                // depth_memory,
-                // depth_image_view,
+                texs: vec![],
             }),
-            entity: Entity { pos: [0., 0., 0.], rot: 0. },
         };
         println!("{:#?}", &me);
         me
     }
 
-    // fn recreate_swapchain(&mut self) {
-    //     let inner = &mut *self.inner;
-    //     let caps = inner.surface.capabilities(&self.adapter.physical_device);
-    //     let swap_config = window::SwapchainConfig::from_caps(&caps, self.format, self.dimensions);
-    //     println!("SWAP CONFIG {:?}", swap_config);
-    //     let extent = swap_config.extent.to_extent();
-
-    //     unsafe {
-    //         inner
-    //             .surface
-    //             .configure_swapchain(&self.device, swap_config)
-    //             .expect("Can't create swapchain");
-    //     }
-
-    //     self.viewport.rect.w = extent.width as _;
-    //     self.viewport.rect.h = extent.height as _;
-    //     panic!("DON'T RECREATE THX");
-    // }
-
-    fn render(&mut self) {
-        println!("entity {:#?}", &self.entity);
+    fn render(&mut self, image_index: usize) {
         let inner = &mut *self.inner;
-        let surface_image = unsafe {
-            match inner.surface.acquire_image(!0) {
-                Ok((image, _)) => image,
-                Err(_) => {
-                    println!("RECRREATING SWACHAIN BTICH");
-                    // self.recreate_swapchain();
-                    // return;
-                    panic!("WAH");
-                }
-            }
-        };
-
+        let (surface_image, _) = unsafe { inner.surface.acquire_image(!0) }.unwrap();
         let mut depth_image = unsafe {
             self.device.create_image(
                 i::Kind::D2(self.viewport.rect.w as i::Size, self.viewport.rect.h as i::Size, 1, 1),
@@ -988,11 +965,19 @@ where
                 .unwrap()
         };
 
+        let tex: &Tex<B> = inner.texs.get(image_index).unwrap();
         unsafe {
-            self.device.wait_for_fence(&inner.fence, !0).expect("Failed to wait for fence");
-            self.device.reset_fence(&inner.fence).expect("Failed to reset fence");
-            inner.cmd_pool.reset(false);
-        }
+            self.device.write_descriptor_sets(iter::once(pso::DescriptorSetWrite {
+                set: &self.desc_set,
+                binding: 0,
+                array_offset: 0,
+                descriptors: [
+                    pso::Descriptor::Image(&tex.view, i::Layout::ShaderReadOnlyOptimal),
+                    pso::Descriptor::Sampler(&inner.sampler),
+                ]
+                .iter(),
+            }))
+        };
 
         // Rendering
         unsafe {
@@ -1003,11 +988,10 @@ where
             inner.cmd_buffer.bind_graphics_pipeline(&inner.pipeline);
             inner.cmd_buffer.bind_vertex_buffers(
                 0,
-                iter::once((&inner.vertex_buffer, hal::buffer::SubRange::WHOLE)),
-            );
-            inner.cmd_buffer.bind_vertex_buffers(
-                1,
-                iter::once((&inner.instance_buffer, hal::buffer::SubRange::WHOLE)),
+                vec![
+                    (&inner.vertex_buffer, hal::buffer::SubRange::WHOLE),
+                    (&inner.instance_buffer, hal::buffer::SubRange::WHOLE),
+                ],
             );
             inner.cmd_buffer.bind_graphics_descriptor_sets(
                 &inner.pipeline_layout,
@@ -1034,24 +1018,7 @@ where
                 &inner.pipeline_layout,
                 ShaderStageFlags::VERTEX,
                 0,
-                ColMatData::from({
-                    // let persp = Mat4::perspective_lh(1.5, 1., 0., 10.);
-                    let persp = Mat4::identity();
-                    let view = {
-                        let eye = self.entity.pos.into(); // camera position
-                        let up = [0., 0., 1.].into(); // vertical up on screen
-                        let center =
-                            eye + Vec3::from([self.entity.rot.cos(), -self.entity.rot.sin(), 0.]); // rot=0. => [1., 0.]. rot=PI/2. => [0., -1.]
-                        Mat4::look_at_lh(eye, center, up)
-                    };
-                    // Mat4::from_scale([0.1, 0.1, 0.1].into())
-                    // let view = Mat4::from_translation(self.entity.pos.into());
-                    // let rot_up = Mat4::from_rotation_y(-PI / 2.);
-                    persp * view * Mat4::from_scale([0.6, 0.6, 0.6].into())
-
-                    // Mat4::identity()
-                })
-                .as_u32_slice(),
+                ColMatData::from(Mat4::identity()).as_u32_slice(),
             );
             inner.cmd_buffer.draw(0..6, 0..NUM_INSTANCES);
             inner.cmd_buffer.end_render_pass();
@@ -1062,21 +1029,20 @@ where
                 signal_semaphores: iter::once(&inner.semaphore),
             };
             self.queue_group.queues[0].submit(submission, Some(&inner.fence));
-            // present frame
             let _result = self.queue_group.queues[0].present(
                 &mut inner.surface,
                 surface_image,
-                Some(&inner.semaphore), // waits for
+                Some(&inner.semaphore),
             );
             self.device.destroy_framebuffer(framebuffer);
-            // if result.is_err() {
-            //     self.recreate_swapchain();
-            // }
-
-            //
-            // self.device.destroy_image(depth_image);
-            // self.device.free_memory(depth_memory);
-            // self.device.destroy_image_view(depth_image_view);
+            self.device.destroy_image(depth_image);
+            self.device.free_memory(depth_memory);
+            self.device.destroy_image_view(depth_image_view);
+        }
+        unsafe {
+            self.device.wait_for_fence(&inner.fence, !0).expect("Failed to wait for fence");
+            self.device.reset_fence(&inner.fence).expect("Failed to reset fence");
+            inner.cmd_pool.reset(false);
         }
     }
 }
@@ -1093,11 +1059,11 @@ where
             self.device.destroy_descriptor_set_layout(inner.set_layout);
             self.device.destroy_buffer(inner.vertex_buffer);
             self.device.destroy_buffer(inner.instance_buffer);
-            self.device.destroy_buffer(inner.image_upload_buffer);
-            self.device.destroy_image(inner.image_logo);
-            // self.device.destroy_image(inner.depth_image);
-            self.device.destroy_image_view(inner.image_view);
-            // self.device.destroy_image_view(inner.depth_image_view);
+            for Tex { image, memory, view } in inner.texs.into_iter() {
+                self.device.destroy_image(image);
+                self.device.free_memory(memory);
+                self.device.destroy_image_view(view);
+            }
             self.device.destroy_sampler(inner.sampler);
             self.device.destroy_command_pool(inner.cmd_pool);
             self.device.destroy_semaphore(inner.semaphore);
@@ -1106,13 +1072,9 @@ where
             inner.surface.unconfigure_swapchain(&self.device);
             self.device.free_memory(inner.vertex_buffer_memory);
             self.device.free_memory(inner.instance_buffer_memory);
-            self.device.free_memory(inner.image_memory);
-            // self.device.free_memory(inner.depth_memory);
-            self.device.free_memory(inner.image_upload_memory);
             self.device.destroy_graphics_pipeline(inner.pipeline);
             self.device.destroy_pipeline_layout(inner.pipeline_layout);
             inner.instance.destroy_surface(inner.surface);
         }
-        println!("DROPPED!");
     }
 }
