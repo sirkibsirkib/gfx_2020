@@ -1,11 +1,14 @@
 mod renderer;
 mod simple_arena;
 
-use gfx_backend_vulkan as back;
-use gfx_hal::{self as hal, prelude::*};
-
-use glam::Mat4;
-pub use renderer::{Rect, Renderer};
+use {
+    gfx_backend_vulkan as back,
+    gfx_hal::{self as hal, prelude::*},
+};
+pub use {
+    glam::Mat4,
+    renderer::{Renderer, TexScissor},
+};
 
 const DIMS: hal::window::Extent2D = hal::window::Extent2D { width: 800, height: 800 };
 
@@ -35,7 +38,7 @@ fn main() {
     renderer.add_image(img_rgba).unwrap();
 
     let mut instance_t_data = [Mat4::default(); MAX_INSTANCES as usize];
-    let mut instance_s_data = [Rect::default(); MAX_INSTANCES as usize];
+    let mut instance_s_data = [TexScissor::default(); MAX_INSTANCES as usize];
     for (i, (t, s)) in instance_t_data.iter_mut().zip(instance_s_data.iter_mut()).enumerate() {
         *t = {
             let tx = i as f32 / 10.;
@@ -48,7 +51,7 @@ fn main() {
         const TILE_SIZE: [f32; 2] = [1. / 11., 1. / 5.];
         *s = {
             let top_left = [i as f32 * TILE_SIZE[0], 0. * TILE_SIZE[1]];
-            Rect { top_left, size: TILE_SIZE }
+            TexScissor { top_left, size: TILE_SIZE }
         };
     }
     renderer.write_instance_t_buffer(0, &instance_t_data).unwrap();

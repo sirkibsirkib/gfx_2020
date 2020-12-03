@@ -1,20 +1,22 @@
-use super::*;
-use crate::simple_arena::SimpleArena;
-use gfx_hal::{
-    self as hal, command,
-    format::{self as f, AsFormat, ChannelType, Rgba8Srgb as ColorFormat, Swizzle},
-    image as i, memory as m,
-    pass::{self, Subpass},
-    prelude::*,
-    pso::{self, PipelineStage, ShaderStageFlags, VertexInputRate},
-    queue::{QueueGroup, Submission},
-};
-use std::{
-    borrow::Borrow,
-    iter,
-    marker::PhantomData,
-    mem::{self, ManuallyDrop},
-    ops::Range,
+use {
+    super::*,
+    crate::simple_arena::SimpleArena,
+    gfx_hal::{
+        self as hal, command,
+        format::{self as f, AsFormat, ChannelType, Rgba8Srgb as ColorFormat, Swizzle},
+        image as i, memory as m,
+        pass::{self, Subpass},
+        prelude::*,
+        pso::{self, PipelineStage, ShaderStageFlags, VertexInputRate},
+        queue::{QueueGroup, Submission},
+    },
+    std::{
+        borrow::Borrow,
+        iter,
+        marker::PhantomData,
+        mem::{self, ManuallyDrop},
+        ops::Range,
+    },
 };
 
 #[derive(Debug, Copy, Clone)]
@@ -48,11 +50,11 @@ struct TriangleVertData {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct Rect {
+pub struct TexScissor {
     pub top_left: [f32; 2],
     pub size: [f32; 2],
 }
-impl Default for Rect {
+impl Default for TexScissor {
     fn default() -> Self {
         Self { top_left: [0.; 2], size: [1.; 2] }
     }
@@ -103,7 +105,6 @@ pub struct Renderer<B: hal::Backend> {
     viewport: pso::Viewport,
     desc_set: B::DescriptorSet,
     inner: ManuallyDrop<RendererInner<B>>,
-    upload_type: hal::MemoryTypeId,
     max_instances: u32,
 }
 
@@ -121,7 +122,7 @@ struct RendererInner<B: hal::Backend> {
     set_layout: B::DescriptorSetLayout,
     triangle_vertex_buffer_bundle: VertexBufferBundle<TriangleVertData, B>,
     instance_t_buffer_bundle: VertexBufferBundle<Mat4, B>,
-    instance_s_buffer_bundle: VertexBufferBundle<Rect, B>,
+    instance_s_buffer_bundle: VertexBufferBundle<TexScissor, B>,
     sampler: B::Sampler,
     tex_arena: SimpleArena<ImageBundle<B>>,
     per_fif: Vec<PerFif<B>>,
@@ -150,11 +151,30 @@ impl<T, B: hal::Backend> DeviceDestroy<VertexBufferBundle<T, B>> for B::Device {
     }
 }
 
+fn cpu_visible_typed_buffer_memtype(
+    memory_types: &Vec<hal::adapter::MemoryType>,
+    buffer_req: &m::Requirements,
+) -> Option<hal::MemoryTypeId> {
+    Some(
+        memory_types
+            .iter()
+            .enumerate()
+            .position(|(id, mem_type)| {
+                // type_mask is a bit field where each bit represents a memory type. If the bit is set
+                // to 1 it means we can use that type for our buffer. So this code finds the first
+                // memory type that has a `1` (or, is allowed), and is visible to the CPU.
+                buffer_req.type_mask & (1 << id) != 0
+                    && mem_type.properties.contains(m::Properties::CPU_VISIBLE)
+            })?
+            .into(),
+    )
+}
+
 impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
     fn new(
         device: &B::Device,
         limits: &hal::Limits,
-        upload_type: hal::MemoryTypeId,
+        memory_types: &Vec<hal::adapter::MemoryType>,
         capacity: u32,
     ) -> Self {
         let stride = mem::size_of::<T>();
@@ -165,14 +185,14 @@ impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
             )
         }
         .unwrap();
-        let instance_buffer_req = unsafe { device.get_buffer_requirements(&buffer) };
-        let memory =
-            unsafe { device.allocate_memory(upload_type, instance_buffer_req.size) }.unwrap();
+        let buffer_req = unsafe { device.get_buffer_requirements(&buffer) };
+        let upload_type = cpu_visible_typed_buffer_memtype(memory_types, &buffer_req).unwrap();
+        let memory = unsafe { device.allocate_memory(upload_type, buffer_req.size) }.unwrap();
         unsafe { device.bind_buffer_memory(&memory, 0, &mut buffer) }.unwrap();
         VertexBufferBundle { buffer, memory, buffered_type_phantom: PhantomData }
     }
 
-    unsafe fn write_buffer(&mut self, device: &B::Device, start: usize, src: &[T]) {
+    unsafe fn write_buffer(&self, device: &B::Device, start: usize, src: &[T]) {
         let stride = mem::size_of::<T>();
         let offset = start * stride;
         let size = src.len() * stride;
@@ -268,56 +288,19 @@ impl<B: hal::Backend> Renderer<B> {
 
         ///////////////////////////////////////////////////////
         // ALLOCATE AND INIT VERTEX BUFFER
-        println!("Memory types: {:#?}", memory_types);
 
-        const QUAD_BUF_BYTES: usize =
-            tri_vert_consts::QUAD.len() * mem::size_of::<TriangleVertData>();
-        assert_ne!(QUAD_BUF_BYTES, 0);
-        let mut vertex_buffer = unsafe {
-            device.create_buffer(
-                padded_len(QUAD_BUF_BYTES, limits.non_coherent_atom_size) as u64,
-                hal::buffer::Usage::VERTEX,
-            )
-        }
-        .unwrap();
+        let triangle_vertex_buffer_bundle =
+            VertexBufferBundle::<TriangleVertData, B>::new(&device, &limits, &memory_types, 6);
+        unsafe { triangle_vertex_buffer_bundle.write_buffer(&device, 0, &tri_vert_consts::QUAD) };
 
-        let vertex_buffer_req = unsafe { device.get_buffer_requirements(&vertex_buffer) };
-        let upload_type = memory_types
-            .iter()
-            .enumerate()
-            .position(|(id, mem_type)| {
-                // type_mask is a bit field where each bit represents a memory type. If the bit is set
-                // to 1 it means we can use that type for our buffer. So this code finds the first
-                // memory type that has a `1` (or, is allowed), and is visible to the CPU.
-                vertex_buffer_req.type_mask & (1 << id) != 0
-                    && mem_type.properties.contains(m::Properties::CPU_VISIBLE)
-            })
-            .unwrap()
-            .into();
-        let vertex_buffer_memory = unsafe {
-            let memory = device.allocate_memory(upload_type, vertex_buffer_req.size).unwrap();
-            device.bind_buffer_memory(&memory, 0, &mut vertex_buffer).unwrap();
-            let mapping = device.map_memory(&memory, m::Segment::ALL).unwrap();
-            std::ptr::copy_nonoverlapping(
-                tri_vert_consts::QUAD.as_ptr() as *const u8,
-                mapping,
-                QUAD_BUF_BYTES,
-            );
-            device.flush_mapped_memory_ranges(iter::once((&memory, m::Segment::ALL))).unwrap();
-            device.unmap_memory(&memory);
-            memory
-        };
-        let triangle_vertex_buffer_bundle = VertexBufferBundle {
-            buffer: vertex_buffer,
-            memory: vertex_buffer_memory,
-            buffered_type_phantom: PhantomData,
-        };
-
-        //////////////////
         let instance_t_buffer_bundle =
-            VertexBufferBundle::<Mat4, B>::new(&device, &limits, upload_type, max_instances);
-        let instance_s_buffer_bundle =
-            VertexBufferBundle::<Rect, B>::new(&device, &limits, upload_type, max_instances);
+            VertexBufferBundle::<Mat4, B>::new(&device, &limits, &memory_types, max_instances);
+        let instance_s_buffer_bundle = VertexBufferBundle::<TexScissor, B>::new(
+            &device,
+            &limits,
+            &memory_types,
+            max_instances,
+        );
 
         let formats = surface.supported_formats(&adapter.physical_device);
         let format = formats.map_or(f::Format::Rgba8Srgb, |formats| {
@@ -455,7 +438,7 @@ impl<B: hal::Backend> Renderer<B> {
                     },
                     pso::VertexBufferDesc {
                         binding: 2,
-                        stride: mem::size_of::<Rect>() as u32,
+                        stride: mem::size_of::<TexScissor>() as u32,
                         rate: VertexInputRate::Instance(1),
                     },
                 ];
@@ -590,7 +573,7 @@ impl<B: hal::Backend> Renderer<B> {
         let per_fif = iter::repeat_with(new_per_fif).take(frames_in_flight).collect();
         Renderer {
             max_instances,
-            upload_type,
+            // upload_type,
             device,
             queue_group,
             adapter,
@@ -624,7 +607,7 @@ impl<B: hal::Backend> Renderer<B> {
         unsafe { self.inner.instance_t_buffer_bundle.write_buffer(&self.device, start, src) }
         Ok(())
     }
-    pub fn write_instance_s_buffer(&mut self, start: usize, src: &[Rect]) -> Result<(), ()> {
+    pub fn write_instance_s_buffer(&mut self, start: usize, src: &[TexScissor]) -> Result<(), ()> {
         if start + src.len() > self.max_instances as usize {
             return Err(());
         }
@@ -665,8 +648,9 @@ impl<B: hal::Backend> Renderer<B> {
 
         // copy image data into staging buffer
         let image_upload_memory = unsafe {
-            let memory =
-                self.device.allocate_memory(self.upload_type, image_mem_reqs.size).unwrap();
+            let upload_type =
+                cpu_visible_typed_buffer_memtype(&memory_types, &image_mem_reqs).unwrap();
+            let memory = self.device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
             self.device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
             let mapping = self.device.map_memory(&memory, m::Segment::ALL).unwrap();
             for y in 0..height as usize {
