@@ -12,6 +12,7 @@ use {
     },
     std::{
         borrow::Borrow,
+        io::Cursor,
         iter,
         marker::PhantomData,
         mem::{self, ManuallyDrop},
@@ -19,27 +20,33 @@ use {
     },
 };
 
-#[derive(Debug, Copy, Clone)]
-pub enum RenderErr {
-    ExceedsMaxInstances,
-    UnknownTextureIndex,
-    InstanceCountMismatch,
+#[derive(Debug, Clone)]
+pub struct DrawInfo<'a> {
+    pub view_transform: &'a Mat4,
+    pub instance_range: Range<u32>,
+}
+impl<'a> DrawInfo<'a> {
+    pub fn new(view_transform: &'a Mat4, instance_range: Range<u32>) -> Self {
+        Self { view_transform, instance_range }
+    }
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct ColMatData([f32; 16]);
-impl From<Mat4> for ColMatData {
-    fn from(m: Mat4) -> Self {
-        Self(*m.as_ref())
-    }
+#[derive(Debug, Copy, Clone)]
+pub enum RenderErr {
+    UnknownTextureIndex,
 }
-impl ColMatData {
+
+trait AsU32Slice {
+    fn as_u32_slice(&self) -> &[u32];
+}
+impl AsU32Slice for Mat4 {
     #[inline]
-    fn as_u32_slice(&self) -> &[u32; 16] {
-        unsafe { mem::transmute(&self.0) }
+    fn as_u32_slice(&self) -> &[u32] {
+        let f32_slice: &[f32] = self.as_ref();
+        unsafe { mem::transmute(f32_slice) }
     }
 }
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 #[allow(non_snake_case)]
@@ -186,14 +193,22 @@ impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
         VertexBufferBundle { buffer, memory, buffered_type_phantom: PhantomData }
     }
 
-    unsafe fn write_buffer(&self, device: &B::Device, start: usize, src: &[T]) {
+    unsafe fn write_buffer(
+        &self,
+        device: &B::Device,
+        checked_start: usize,
+        bounds_checked_iter: impl Iterator<Item = T>,
+    ) {
         let stride = mem::size_of::<T>();
-        let offset = start * stride;
-        let size = src.len() * stride;
-        let segment = m::Segment { offset: offset as u64, size: Some(size as u64) };
+        let segment = m::Segment {
+            size: bounds_checked_iter.size_hint().1.map(move |n| (n * stride) as u64),
+            offset: (checked_start * stride) as u64,
+        };
         let mapping = device.map_memory(&self.memory, segment.clone()).unwrap();
-        let dest: &mut [T] = std::slice::from_raw_parts_mut(mapping as _, src.len());
-        dest.copy_from_slice(src);
+        let typed_mapping: *mut T = mapping as _;
+        for (i, data) in bounds_checked_iter.enumerate() {
+            typed_mapping.add(i).write(data);
+        }
         device.flush_mapped_memory_ranges(iter::once((&self.memory, segment))).unwrap();
         device.unmap_memory(&self.memory);
     }
@@ -285,7 +300,13 @@ impl<B: hal::Backend> Renderer<B> {
 
         let triangle_vertex_buffer_bundle =
             VertexBufferBundle::<TriangleVertData, B>::new(&device, &limits, &memory_types, 6);
-        unsafe { triangle_vertex_buffer_bundle.write_buffer(&device, 0, &tri_vert_consts::QUAD) };
+        unsafe {
+            triangle_vertex_buffer_bundle.write_buffer(
+                &device,
+                0,
+                tri_vert_consts::QUAD.iter().copied(),
+            )
+        };
 
         let instance_t_buffer_bundle =
             VertexBufferBundle::<Mat4, B>::new(&device, &limits, &memory_types, max_instances);
@@ -382,7 +403,7 @@ impl<B: hal::Backend> Renderer<B> {
         };
 
         let pipeline_layout = {
-            let push_constant_bytes = mem::size_of::<ColMatData>() as u32;
+            let push_constant_bytes = mem::size_of::<Mat4>() as u32;
             unsafe {
                 device.create_pipeline_layout(
                     iter::once(&set_layout),
@@ -395,15 +416,15 @@ impl<B: hal::Backend> Renderer<B> {
         let pipeline = {
             let vs_module = {
                 let spirv =
-                    gfx_auxil::read_spirv(std::fs::File::open("./src/data/quad.vert.spv").unwrap())
-                        // gfx_auxil::read_spirv(Cursor::new(&include_bytes!("data/quad.vert.spv")[..]))
+                    // gfx_auxil::read_spirv(std::fs::File::open("./src/data/quad.vert.spv").unwrap())
+                        gfx_auxil::read_spirv(Cursor::new(&include_bytes!("data/quad.vert.spv")[..]))
                         .unwrap();
                 unsafe { device.create_shader_module(&spirv) }.unwrap()
             };
             let fs_module = {
                 let spirv =
-                    gfx_auxil::read_spirv(std::fs::File::open("./src/data/quad.frag.spv").unwrap())
-                        // gfx_auxil::read_spirv(Cursor::new(&include_bytes!("./data/quad.frag.spv")[..]))
+                    // gfx_auxil::read_spirv(std::fs::File::open("./src/data/quad.frag.spv").unwrap())
+                        gfx_auxil::read_spirv(Cursor::new(&include_bytes!("./data/quad.frag.spv")[..]))
                         .unwrap();
                 unsafe { device.create_shader_module(&spirv) }.unwrap()
             };
@@ -594,18 +615,39 @@ impl<B: hal::Backend> Renderer<B> {
         }
     }
 
-    pub fn write_instance_t_buffer(&mut self, start: usize, src: &[Mat4]) -> Result<(), ()> {
-        if start + src.len() > self.max_instances as usize {
+    pub fn write_instance_t_buffer(
+        &mut self,
+        start: usize,
+        data: impl IntoIterator<Item = Mat4>,
+    ) -> Result<(), ()> {
+        if start > self.max_instances as usize {
             return Err(());
         }
-        unsafe { self.inner.instance_t_buffer_bundle.write_buffer(&self.device, start, src) }
+        unsafe {
+            self.inner.instance_t_buffer_bundle.write_buffer(
+                &self.device,
+                start,
+                data.into_iter().take(self.max_instances as usize - start),
+            )
+        }
         Ok(())
     }
-    pub fn write_instance_s_buffer(&mut self, start: usize, src: &[TexScissor]) -> Result<(), ()> {
-        if start + src.len() > self.max_instances as usize {
+
+    pub fn write_instance_s_buffer(
+        &mut self,
+        start: usize,
+        data: impl IntoIterator<Item = TexScissor>,
+    ) -> Result<(), ()> {
+        if start > self.max_instances as usize {
             return Err(());
         }
-        unsafe { self.inner.instance_s_buffer_bundle.write_buffer(&self.device, start, src) }
+        unsafe {
+            self.inner.instance_s_buffer_bundle.write_buffer(
+                &self.device,
+                start,
+                data.into_iter().take(self.max_instances as usize - start),
+            )
+        }
         Ok(())
     }
 
@@ -759,19 +801,11 @@ impl<B: hal::Backend> Renderer<B> {
         Ok(self.inner.tex_arena.add(ImageBundle { image, memory, view }))
     }
 
-    pub fn render_instances(
+    pub fn render_instances<'a>(
         &mut self,
         image_index: usize,
-        instance_t_range: Range<u32>,
-        instance_s_range: Range<u32>,
+        draw_info_iter: impl IntoIterator<Item = DrawInfo<'a>>,
     ) -> Result<(), RenderErr> {
-        if instance_t_range.end > self.max_instances || instance_s_range.end > self.max_instances {
-            return Err(RenderErr::ExceedsMaxInstances);
-        }
-        let n_instances: u32 = instance_t_range.len() as u32;
-        if n_instances != instance_s_range.len() as u32 {
-            return Err(RenderErr::InstanceCountMismatch);
-        }
         let inner = &mut *self.inner;
         let per_fif =
             inner.per_fif.get_mut(inner.next_fif_index).ok_or(RenderErr::UnknownTextureIndex)?;
@@ -816,27 +850,14 @@ impl<B: hal::Backend> Renderer<B> {
             per_fif.cmd_buffer.set_viewports(0, &[self.viewport.clone()]); // normalized device -> screen coords
             per_fif.cmd_buffer.set_scissors(0, &[self.viewport.rect]); // TODO mess with this and see if it crops
             per_fif.cmd_buffer.bind_graphics_pipeline(&inner.pipeline);
-            const SIZES: [u64; 2] =
-                [mem::size_of::<Mat4>() as u64, mem::size_of::<TexScissor>() as u64];
-            let vert_bindings = vec![
-                (&inner.triangle_vertex_buffer_bundle.buffer, hal::buffer::SubRange::WHOLE),
-                (
-                    &inner.instance_t_buffer_bundle.buffer,
-                    hal::buffer::SubRange {
-                        size: Some(n_instances as u64 * SIZES[0]),
-                        offset: instance_t_range.start as u64 * SIZES[0],
-                    },
-                ),
-                (
-                    &inner.instance_s_buffer_bundle.buffer,
-                    hal::buffer::SubRange {
-                        size: Some(n_instances as u64 * SIZES[1]),
-                        offset: instance_s_range.start as u64 * SIZES[1],
-                    },
-                ),
+            let vert_bindings = [
+                &inner.triangle_vertex_buffer_bundle.buffer,
+                &inner.instance_t_buffer_bundle.buffer,
+                &inner.instance_s_buffer_bundle.buffer,
             ];
-            // let vert_binding_iter = vert_bindings.iter().map(|(a, b)| (*a, *b));
-            per_fif.cmd_buffer.bind_vertex_buffers(0, vert_bindings);
+            let vert_binding_iter =
+                vert_bindings.iter().map(|&b| (b, hal::buffer::SubRange::WHOLE));
+            per_fif.cmd_buffer.bind_vertex_buffers(0, vert_binding_iter);
             per_fif.cmd_buffer.bind_graphics_descriptor_sets(
                 &inner.pipeline_layout,
                 0,
@@ -858,13 +879,18 @@ impl<B: hal::Backend> Renderer<B> {
                 ],
                 command::SubpassContents::Inline,
             );
-            per_fif.cmd_buffer.push_graphics_constants(
-                &inner.pipeline_layout,
-                ShaderStageFlags::VERTEX,
-                0,
-                ColMatData::from(Mat4::identity()).as_u32_slice(),
-            );
-            per_fif.cmd_buffer.draw(0..6, 0..n_instances);
+            for DrawInfo { view_transform, instance_range } in draw_info_iter {
+                if instance_range.end > self.max_instances {
+                    continue;
+                }
+                per_fif.cmd_buffer.push_graphics_constants(
+                    &inner.pipeline_layout,
+                    ShaderStageFlags::VERTEX,
+                    0,
+                    view_transform.as_u32_slice(),
+                );
+                per_fif.cmd_buffer.draw(0..6, instance_range);
+            }
             per_fif.cmd_buffer.end_render_pass();
             per_fif.cmd_buffer.finish();
             let submission = Submission {
