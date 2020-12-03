@@ -23,6 +23,7 @@ use {
 pub enum RenderErr {
     ExceedsMaxInstances,
     UnknownTextureIndex,
+    InstanceCountMismatch,
 }
 
 #[repr(C)]
@@ -135,6 +136,17 @@ const fn padded_len(n: usize, non_coherent_atom_size: usize) -> usize {
     ((n + non_coherent_atom_size - 1) / non_coherent_atom_size) * non_coherent_atom_size
 }
 
+fn mem_type_for_buffer(
+    memory_types: &Vec<hal::adapter::MemoryType>,
+    buffer_req: &m::Requirements,
+    properties: m::Properties,
+) -> Option<hal::MemoryTypeId> {
+    let t = memory_types.iter().enumerate().position(|(id, mem_type)| {
+        buffer_req.type_mask & (1 << id) != 0 && mem_type.properties.contains(properties)
+    })?;
+    Some(t.into())
+}
+
 impl<B: hal::Backend> DeviceDestroy<ImageBundle<B>> for B::Device {
     unsafe fn device_destroy(&mut self, ib: ImageBundle<B>) {
         let ImageBundle { image, memory, view } = ib;
@@ -149,25 +161,6 @@ impl<T, B: hal::Backend> DeviceDestroy<VertexBufferBundle<T, B>> for B::Device {
         self.destroy_buffer(buffer);
         self.free_memory(memory);
     }
-}
-
-fn cpu_visible_typed_buffer_memtype(
-    memory_types: &Vec<hal::adapter::MemoryType>,
-    buffer_req: &m::Requirements,
-) -> Option<hal::MemoryTypeId> {
-    Some(
-        memory_types
-            .iter()
-            .enumerate()
-            .position(|(id, mem_type)| {
-                // type_mask is a bit field where each bit represents a memory type. If the bit is set
-                // to 1 it means we can use that type for our buffer. So this code finds the first
-                // memory type that has a `1` (or, is allowed), and is visible to the CPU.
-                buffer_req.type_mask & (1 << id) != 0
-                    && mem_type.properties.contains(m::Properties::CPU_VISIBLE)
-            })?
-            .into(),
-    )
 }
 
 impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
@@ -186,7 +179,8 @@ impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
         }
         .unwrap();
         let buffer_req = unsafe { device.get_buffer_requirements(&buffer) };
-        let upload_type = cpu_visible_typed_buffer_memtype(memory_types, &buffer_req).unwrap();
+        let upload_type =
+            mem_type_for_buffer(memory_types, &buffer_req, m::Properties::CPU_VISIBLE).unwrap();
         let memory = unsafe { device.allocate_memory(upload_type, buffer_req.size) }.unwrap();
         unsafe { device.bind_buffer_memory(&memory, 0, &mut buffer) }.unwrap();
         VertexBufferBundle { buffer, memory, buffered_type_phantom: PhantomData }
@@ -649,7 +643,8 @@ impl<B: hal::Backend> Renderer<B> {
         // copy image data into staging buffer
         let image_upload_memory = unsafe {
             let upload_type =
-                cpu_visible_typed_buffer_memtype(&memory_types, &image_mem_reqs).unwrap();
+                mem_type_for_buffer(&memory_types, &image_mem_reqs, m::Properties::CPU_VISIBLE)
+                    .unwrap();
             let memory = self.device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
             self.device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
             let mapping = self.device.map_memory(&memory, m::Segment::ALL).unwrap();
@@ -679,16 +674,10 @@ impl<B: hal::Backend> Renderer<B> {
         .unwrap();
         let memory = {
             let image_req = unsafe { self.device.get_image_requirements(&image) };
-            let device_type = memory_types
-                .iter()
-                .enumerate()
-                .position(|(id, memory_type)| {
-                    image_req.type_mask & (1 << id) != 0
-                        && memory_type.properties.contains(m::Properties::DEVICE_LOCAL)
-                })
-                .unwrap()
-                .into();
-            unsafe { self.device.allocate_memory(device_type, image_req.size) }.unwrap()
+            let upload_type =
+                mem_type_for_buffer(&memory_types, &image_req, m::Properties::DEVICE_LOCAL)
+                    .unwrap();
+            unsafe { self.device.allocate_memory(upload_type, image_req.size) }.unwrap()
         };
 
         unsafe { self.device.bind_image_memory(&memory, 0, &mut image) }.unwrap();
@@ -770,13 +759,18 @@ impl<B: hal::Backend> Renderer<B> {
         Ok(self.inner.tex_arena.add(ImageBundle { image, memory, view }))
     }
 
-    pub fn render(
+    pub fn render_instances(
         &mut self,
         image_index: usize,
-        instance_range: Range<u32>,
+        instance_t_range: Range<u32>,
+        instance_s_range: Range<u32>,
     ) -> Result<(), RenderErr> {
-        if instance_range.end > self.max_instances {
+        if instance_t_range.end > self.max_instances || instance_s_range.end > self.max_instances {
             return Err(RenderErr::ExceedsMaxInstances);
+        }
+        let n_instances: u32 = instance_t_range.len() as u32;
+        if n_instances != instance_s_range.len() as u32 {
+            return Err(RenderErr::InstanceCountMismatch);
         }
         let inner = &mut *self.inner;
         let per_fif =
@@ -822,14 +816,27 @@ impl<B: hal::Backend> Renderer<B> {
             per_fif.cmd_buffer.set_viewports(0, &[self.viewport.clone()]); // normalized device -> screen coords
             per_fif.cmd_buffer.set_scissors(0, &[self.viewport.rect]); // TODO mess with this and see if it crops
             per_fif.cmd_buffer.bind_graphics_pipeline(&inner.pipeline);
-            per_fif.cmd_buffer.bind_vertex_buffers(
-                0,
-                vec![
-                    (&inner.triangle_vertex_buffer_bundle.buffer, hal::buffer::SubRange::WHOLE),
-                    (&inner.instance_t_buffer_bundle.buffer, hal::buffer::SubRange::WHOLE),
-                    (&inner.instance_s_buffer_bundle.buffer, hal::buffer::SubRange::WHOLE),
-                ],
-            );
+            const SIZES: [u64; 2] =
+                [mem::size_of::<Mat4>() as u64, mem::size_of::<TexScissor>() as u64];
+            let vert_bindings = vec![
+                (&inner.triangle_vertex_buffer_bundle.buffer, hal::buffer::SubRange::WHOLE),
+                (
+                    &inner.instance_t_buffer_bundle.buffer,
+                    hal::buffer::SubRange {
+                        size: Some(n_instances as u64 * SIZES[0]),
+                        offset: instance_t_range.start as u64 * SIZES[0],
+                    },
+                ),
+                (
+                    &inner.instance_s_buffer_bundle.buffer,
+                    hal::buffer::SubRange {
+                        size: Some(n_instances as u64 * SIZES[1]),
+                        offset: instance_s_range.start as u64 * SIZES[1],
+                    },
+                ),
+            ];
+            // let vert_binding_iter = vert_bindings.iter().map(|(a, b)| (*a, *b));
+            per_fif.cmd_buffer.bind_vertex_buffers(0, vert_bindings);
             per_fif.cmd_buffer.bind_graphics_descriptor_sets(
                 &inner.pipeline_layout,
                 0,
@@ -857,7 +864,7 @@ impl<B: hal::Backend> Renderer<B> {
                 0,
                 ColMatData::from(Mat4::identity()).as_u32_slice(),
             );
-            per_fif.cmd_buffer.draw(0..6, instance_range);
+            per_fif.cmd_buffer.draw(0..6, 0..n_instances);
             per_fif.cmd_buffer.end_render_pass();
             per_fif.cmd_buffer.finish();
             let submission = Submission {
@@ -881,10 +888,7 @@ impl<B: hal::Backend> Renderer<B> {
     }
 }
 
-impl<B> Drop for Renderer<B>
-where
-    B: hal::Backend,
-{
+impl<B: hal::Backend> Drop for Renderer<B> {
     fn drop(&mut self) {
         self.device.wait_idle().unwrap();
         unsafe {

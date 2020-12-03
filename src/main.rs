@@ -30,7 +30,7 @@ fn main() {
     let instance = back::Instance::create("gfx-rs quad", 1).expect("Failed to create an instance!");
     let surface = unsafe { instance.create_surface(&window).expect("Failed to create a surface!") };
     let adapter = instance.enumerate_adapters().into_iter().next().unwrap();
-    const MAX_INSTANCES: u32 = 16;
+    const MAX_INSTANCES: u32 = 100;
     let mut renderer = Renderer::new(instance, surface, adapter, MAX_INSTANCES);
 
     let img_rgba =
@@ -39,18 +39,29 @@ fn main() {
 
     let mut instance_t_data = [Mat4::default(); MAX_INSTANCES as usize];
     let mut instance_s_data = [TexScissor::default(); MAX_INSTANCES as usize];
-    for (i, (t, s)) in instance_t_data.iter_mut().zip(instance_s_data.iter_mut()).enumerate() {
+    let mut rng = rand::thread_rng();
+    let xy_dist = rand::distributions::Uniform::new(-1., 1.);
+    let z_dist = rand::distributions::Uniform::new(0., 1.);
+    const SHEET_LAYOUT: [usize; 2] = [11, 5];
+    let sheet_x_dist = rand::distributions::Uniform::from(0..SHEET_LAYOUT[0]);
+    let sheet_y_dist = rand::distributions::Uniform::from(0..SHEET_LAYOUT[1]);
+    for (t, s) in instance_t_data.iter_mut().zip(instance_s_data.iter_mut()) {
+        use rand::Rng;
         *t = {
-            let tx = i as f32 / 10.;
-            let ty = i as f32 / 46.;
-            let tz = (i % 3) as f32 / 3.;
+            let [tx, ty, tz] = [rng.sample(&xy_dist), rng.sample(&xy_dist), rng.sample(&z_dist)];
             let moved = Mat4::from_translation([tx, ty, tz].into());
             let scale = Mat4::from_scale([0.2; 3].into());
             (moved * scale).into()
         };
-        const TILE_SIZE: [f32; 2] = [1. / 11., 1. / 5.];
         *s = {
-            let top_left = [i as f32 * TILE_SIZE[0], 0. * TILE_SIZE[1]];
+            let top_left = [
+                rng.sample(&sheet_x_dist) as f32 / SHEET_LAYOUT[0] as f32,
+                rng.sample(&sheet_y_dist) as f32 / SHEET_LAYOUT[1] as f32,
+            ];
+            const TILE_SIZE: [f32; 2] = [
+                1. / SHEET_LAYOUT[0] as f32, //
+                1. / SHEET_LAYOUT[1] as f32,
+            ];
             TexScissor { top_left, size: TILE_SIZE }
         };
     }
@@ -59,6 +70,7 @@ fn main() {
 
     // It is important that the closure move captures the Renderer,
     // otherwise it will not be dropped when the event loop exits.
+    let mut zop = 0;
     event_loop.run(move |event, _, control_flow| {
         println!("{:?}", event);
         use winit::{
@@ -74,7 +86,10 @@ fn main() {
                 ..
             } => *control_flow = ControlFlow::Exit,
             E::WindowEvent { event: We::Resized(_), .. } => unreachable!(),
-            E::RedrawEventsCleared => renderer.render(0, 0..MAX_INSTANCES).unwrap(),
+            E::RedrawEventsCleared => {
+                zop = (zop + 1) % MAX_INSTANCES;
+                renderer.render_instances(0, 0..(MAX_INSTANCES - zop), zop..MAX_INSTANCES).unwrap()
+            }
             _ => {}
         }
     })
