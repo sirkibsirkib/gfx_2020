@@ -624,6 +624,7 @@ impl<B: hal::Backend> Renderer<B> {
             return Err(());
         }
         unsafe {
+            // TODO await previous frame
             self.inner.instance_t_buffer_bundle.write_buffer(
                 &self.device,
                 start,
@@ -642,6 +643,7 @@ impl<B: hal::Backend> Renderer<B> {
             return Err(());
         }
         unsafe {
+            // TODO await previous frame
             self.inner.instance_s_buffer_bundle.write_buffer(
                 &self.device,
                 start,

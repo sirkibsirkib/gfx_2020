@@ -31,6 +31,7 @@ fn main() {
     let surface = unsafe { instance.create_surface(&window).expect("Failed to create a surface!") };
     let adapter = instance.enumerate_adapters().into_iter().next().unwrap();
     const MAX_INSTANCES: u32 = 10_000;
+    const DRAWS_PER_FRAME: usize = 10;
     let mut renderer = Renderer::new(instance, surface, adapter, MAX_INSTANCES);
 
     let img_rgba =
@@ -85,7 +86,6 @@ fn main() {
     // otherwise it will not be dropped when the event loop exits.
     use std::f32::consts::PI;
 
-    const DRAWS_PER_FRAME: usize = 100;
     let view_transforms: Vec<_> = (0..DRAWS_PER_FRAME)
         .map(|_| {
             let rot = rng.sample(&rot_z_dist);
@@ -111,8 +111,8 @@ fn main() {
             E::RedrawEventsCleared => {
                 let draw_info_iter =
                     view_transforms.iter().map(|trans| DrawInfo::new(trans, 0..MAX_INSTANCES));
-                renderer.render_instances(0, draw_info_iter).unwrap();
                 let before = std::time::Instant::now();
+                renderer.render_instances(0, draw_info_iter).unwrap();
                 println!("{:?}", before.elapsed());
             }
             _ => {}
