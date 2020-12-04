@@ -95,6 +95,15 @@ struct VertexBufferBundle<T, B: hal::Backend> {
     buffer: B::Buffer,
     memory: B::Memory,
     buffered_type_phantom: PhantomData<T>,
+    transfer: VertexBufferTransfer<T>,
+}
+
+#[derive(Debug)]
+enum VertexBufferTransfer<T> {
+    Coherent { mapping_ptr: *mut T },
+    // Staged {
+
+    // }
 }
 
 #[derive(Debug)]
@@ -164,7 +173,12 @@ impl<B: hal::Backend> DeviceDestroy<ImageBundle<B>> for B::Device {
 }
 impl<T, B: hal::Backend> DeviceDestroy<VertexBufferBundle<T, B>> for B::Device {
     unsafe fn device_destroy(&mut self, vbb: VertexBufferBundle<T, B>) {
-        let VertexBufferBundle { buffer, memory, buffered_type_phantom: _ } = vbb;
+        let VertexBufferBundle { buffer, memory, transfer, buffered_type_phantom: _ } = vbb;
+        match transfer {
+            VertexBufferTransfer::Coherent { mapping_ptr: _ } => {
+                self.unmap_memory(&memory);
+            }
+        }
         self.destroy_buffer(buffer);
         self.free_memory(memory);
     }
@@ -190,27 +204,40 @@ impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
             mem_type_for_buffer(memory_types, &buffer_req, m::Properties::CPU_VISIBLE).unwrap();
         let memory = unsafe { device.allocate_memory(upload_type, buffer_req.size) }.unwrap();
         unsafe { device.bind_buffer_memory(&memory, 0, &mut buffer) }.unwrap();
-        VertexBufferBundle { buffer, memory, buffered_type_phantom: PhantomData }
+        let mapping_ptr = unsafe { device.map_memory(&memory, m::Segment::ALL).unwrap() as *mut T };
+        VertexBufferBundle {
+            buffer,
+            memory,
+            buffered_type_phantom: PhantomData,
+            transfer: VertexBufferTransfer::Coherent { mapping_ptr },
+        }
     }
 
     unsafe fn write_buffer(
         &self,
         device: &B::Device,
-        checked_start: usize,
+        start_offset: usize,
         bounds_checked_iter: impl Iterator<Item = T>,
     ) {
-        let stride = mem::size_of::<T>();
-        let segment = m::Segment {
-            size: bounds_checked_iter.size_hint().1.map(move |n| (n * stride) as u64),
-            offset: (checked_start * stride) as u64,
-        };
-        let mapping = device.map_memory(&self.memory, segment.clone()).unwrap();
-        let typed_mapping: *mut T = mapping as _;
-        for (i, data) in bounds_checked_iter.enumerate() {
-            typed_mapping.add(i).write(data);
+        match self.transfer {
+            VertexBufferTransfer::Coherent { mapping_ptr } => {
+                let mut end_offset = start_offset;
+                for data in bounds_checked_iter {
+                    mapping_ptr.add(end_offset).write(data);
+                    end_offset += 1;
+                }
+                let stride = mem::size_of::<T>() as u64;
+                device
+                    .flush_mapped_memory_ranges(iter::once((
+                        &self.memory,
+                        m::Segment {
+                            offset: start_offset as u64 * stride,
+                            size: Some((end_offset - start_offset) as u64 * stride),
+                        },
+                    )))
+                    .unwrap();
+            }
         }
-        device.flush_mapped_memory_ranges(iter::once((&self.memory, segment))).unwrap();
-        device.unmap_memory(&self.memory);
     }
 }
 
@@ -620,18 +647,19 @@ impl<B: hal::Backend> Renderer<B> {
         start: usize,
         data: impl IntoIterator<Item = Mat4>,
     ) -> Result<(), ()> {
-        if start > self.max_instances as usize {
-            return Err(());
+        if let Some(max_size) = (self.max_instances as usize).checked_sub(start) {
+            unsafe {
+                // TODO await previous frame
+                self.inner.instance_t_buffer_bundle.write_buffer(
+                    &self.device,
+                    start,
+                    data.into_iter().take(max_size),
+                )
+            }
+            Ok(())
+        } else {
+            Err(())
         }
-        unsafe {
-            // TODO await previous frame
-            self.inner.instance_t_buffer_bundle.write_buffer(
-                &self.device,
-                start,
-                data.into_iter().take(self.max_instances as usize - start),
-            )
-        }
-        Ok(())
     }
 
     pub fn write_instance_s_buffer(
@@ -639,18 +667,19 @@ impl<B: hal::Backend> Renderer<B> {
         start: usize,
         data: impl IntoIterator<Item = TexScissor>,
     ) -> Result<(), ()> {
-        if start > self.max_instances as usize {
-            return Err(());
+        if let Some(max_size) = (self.max_instances as usize).checked_sub(start) {
+            unsafe {
+                // TODO await previous frame
+                self.inner.instance_s_buffer_bundle.write_buffer(
+                    &self.device,
+                    start,
+                    data.into_iter().take(max_size),
+                )
+            }
+            Ok(())
+        } else {
+            Err(())
         }
-        unsafe {
-            // TODO await previous frame
-            self.inner.instance_s_buffer_bundle.write_buffer(
-                &self.device,
-                start,
-                data.into_iter().take(self.max_instances as usize - start),
-            )
-        }
-        Ok(())
     }
 
     pub fn remove_image(&mut self, index: usize) -> bool {
