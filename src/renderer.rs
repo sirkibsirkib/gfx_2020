@@ -267,7 +267,8 @@ impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
     ) -> usize {
         let mut count_written = 0;
         for data in bounds_checked_iter {
-            self.mapping_ptr.add(start_offset + count_written).write(data);
+            let dest = self.mapping_ptr.add(start_offset + count_written);
+            dest.write(data);
             count_written += 1;
         }
         let stride = mem::size_of::<T>() as u64;
@@ -525,7 +526,7 @@ impl<B: hal::Backend> Renderer<B> {
                         location: 1,
                         binding: 0,
                         element: pso::Element {
-                            format: f::Format::Rg32Sfloat,
+                            format: f::Format::Rgb32Sfloat,
                             offset: mem::size_of::<[f32; 2]>() as u32,
                         },
                     });
@@ -569,7 +570,7 @@ impl<B: hal::Backend> Renderer<B> {
                     &pipeline_layout,
                     Subpass { index: 0, main_pass: &render_pass },
                 );
-                // pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
+                pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
                 pipeline_desc.depth_stencil = pso::DepthStencilDesc {
                     depth: Some(pso::DepthTest { fun: pso::Comparison::LessEqual, write: true }),
                     depth_bounds: false,
@@ -853,6 +854,7 @@ impl<B: hal::Backend> Renderer<B> {
                 .submit_without_semaphores(Some(&cmd_buffer), Some(&mut fence));
             self.device.wait_for_fence(&fence, !0).expect("Can't wait for fence");
             self.inner.cmd_pool.free(iter::once(cmd_buffer));
+            self.device.destroy_buffer(image_upload_buffer);
             drop(img_rgba);
         }
         unsafe { self.device.free_memory(image_upload_memory) };

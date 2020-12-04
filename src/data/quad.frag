@@ -9,5 +9,6 @@ layout(set = 0, binding = 1) uniform sampler u_sampler;
 
 void main() {
     target0 = texture(sampler2D(u_texture, u_sampler), v_uv);
+    target0.xyz = target0.xyz * (1.0 - gl_FragCoord.z);
 }
 

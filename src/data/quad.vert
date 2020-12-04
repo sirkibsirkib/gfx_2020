@@ -29,6 +29,6 @@ void main() {
     vec4 coord = vec4(model_coord, 1.0);
     mat4 inst = mat4(inst_0, inst_1, inst_2 ,inst_3);
     mat4 view = mat4(pc.trans_0, pc.trans_1, pc.trans_2, pc.trans_3);
-    gl_Position = view * inst * coord;
+    gl_Position = view * (inst * coord);
 }
 
