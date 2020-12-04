@@ -146,58 +146,55 @@ fn three_dimensions() {
     let instance = back::Instance::create("gfx-rs 3d", 1).unwrap();
     let surface = unsafe { instance.create_surface(&window).unwrap() };
     let adapter = instance.enumerate_adapters().into_iter().next().unwrap();
-    // use glam::Vec3;
-    // const P: f32 = 1.0;
-    // const N: f32 = -1.;
-    // const NNN: Vec3 = Vec3 { x: N, y: N, z: N };
-    // const NNP: Vec3 = Vec3 { x: N, y: N, z: P };
-    // const NPN: Vec3 = Vec3 { x: N, y: P, z: N };
-    // const NPP: Vec3 = Vec3 { x: N, y: P, z: P };
-    // const PNN: Vec3 = Vec3 { x: P, y: N, z: N };
-    // const PNP: Vec3 = Vec3 { x: P, y: N, z: P };
-    // const PPN: Vec3 = Vec3 { x: P, y: P, z: N };
-    // const PPP: Vec3 = Vec3 { x: P, y: P, z: P };
-    // const VERT_COORDS: &[VertCoord] = &[
-    //     //d
-    //     VertCoord,
-    // ];
 
-    let quad_rots = &[
-        Mat4::from_rotation_x(0.) * Mat4::from_rotation_z(0.), // top
-        Mat4::from_rotation_x(PI) * Mat4::from_rotation_z(0.), // bottom
-        Mat4::from_rotation_x(PI * -0.5) * Mat4::from_rotation_z(0.), // front
-        Mat4::from_rotation_x(PI * 0.5) * Mat4::from_rotation_z(0.), // back
-        Mat4::from_rotation_y(PI * -0.5) * Mat4::from_rotation_z(0.), // left
-        Mat4::from_rotation_y(PI * 0.5) * Mat4::from_rotation_z(0.), // right
-    ];
     const THIRD: f32 = 1. / 3.;
-    let size = [0.5, THIRD];
-    let tex_scissors = (0..3).flat_map(move |i| {
-        (0..2).map(move |j| TexScissor { size, top_left: [i as f32 / 3., j as f32 / 2.] })
-    });
-    let translate_up = Mat4::from_translation([0., 0., -0.5].into());
-    let vert_coord_iter =
-        quad_rots.iter().map(|&quad_rot| quad_rot * translate_up).zip(tex_scissors).flat_map(
-            |(quad_trans, tex_scissor)| {
-                vert_coord_consts::UNIT_QUAD.iter().map(move |quad_vert_coord| VertCoord {
-                    model_coord: *quad_trans
-                        .transform_point3(Vec3::from(quad_vert_coord.model_coord))
-                        .as_ref(),
-                    tex_coord: tex_scissor * quad_vert_coord.tex_coord,
-                })
-            },
-        );
+    let vert_coord_iter = [
+        //
+        VertCoord { model_coord: [0., 0., -1.0], tex_coord: [0., 0.] },
+        VertCoord { model_coord: [1., 0., 0.], tex_coord: [0.5, 0.] },
+        VertCoord { model_coord: [0., 1., 0.], tex_coord: [0., 1. / 3.] },
+        VertCoord { model_coord: [0., 0., 0.], tex_coord: [0., 0.] },
+        VertCoord { model_coord: [1., 0., 1.0], tex_coord: [0.5, 0.] },
+        VertCoord { model_coord: [0., -1., 0.7], tex_coord: [0., 1. / 3.] },
+    ]
+    .iter()
+    .copied();
+    // let quad_rots = &[
+    //     Mat4::from_rotation_x(0.),  // top
+    //     Mat4::from_rotation_x(0.3), // bottom
+    //     Mat4::from_rotation_x(0.6), // front
+    //     Mat4::from_rotation_x(0.7), // back
+    //     Mat4::from_rotation_y(0.9), // left
+    //     Mat4::from_rotation_y(1.2), // right
+    // ];
+    // let size = [0.5, THIRD];
+    // let tex_scissors = (0..3).flat_map(move |i| {
+    //     (0..2).map(move |j| TexScissor { size, top_left: [i as f32 / 3., j as f32 / 2.] })
+    // });
+    // let translate_up = Mat4::from_translation([0., 0., -0.5].into());
+    // let vert_coord_iter =
+    //     quad_rots.iter().map(|&quad_rot| quad_rot * translate_up).zip(tex_scissors).flat_map(
+    //         |(quad_trans, tex_scissor)| {
+    //             vert_coord_consts::UNIT_QUAD.iter().map(move |quad_vert_coord| VertCoord {
+    //                 model_coord: *quad_trans
+    //                     .transform_point3(Vec3::from(quad_vert_coord.model_coord))
+    //                     .as_ref(),
+    //                 tex_coord: tex_scissor * quad_vert_coord.tex_coord,
+    //             })
+    //         },
+    //     );
+
     for p in vert_coord_iter.clone() {
         println!("-- {:#?}", p);
     }
-    let max_tri_verts = (quad_rots.len() * vert_coord_consts::UNIT_QUAD.len()) as u32;
-    assert_eq!(max_tri_verts, 6 * 6);
+    let max_tri_verts = vert_coord_iter.clone().count() as u32;
+    // assert_eq!(max_tri_verts, 6 * 6);
     const MAX_INSTANCES: u32 = 3;
     let mut renderer = Renderer::new(instance, surface, adapter, max_tri_verts, MAX_INSTANCES);
     let img_rgba =
         image::io::Reader::open("./src/data/3d.png").unwrap().decode().unwrap().to_rgba();
     renderer.load_texture(&img_rgba);
-    renderer.write_vertex_buffer(6, vert_coord_iter.take(6));
+    renderer.write_vertex_buffer(0, vert_coord_iter);
     renderer.write_vertex_buffer(
         0,
         [
@@ -220,9 +217,10 @@ fn three_dimensions() {
             event::{Event as E, KeyboardInput as Ki, VirtualKeyCode as Vkc, WindowEvent as We},
             event_loop::ControlFlow,
         };
-        *control_flow = ControlFlow::WaitUntil(
-            std::time::Instant::now() + std::time::Duration::from_millis(16),
-        );
+        *control_flow = ControlFlow::Wait;
+        // Until(
+        //     std::time::Instant::now() + std::time::Duration::from_millis(16),
+        // );
         match event {
             E::WindowEvent { event: We::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
             E::WindowEvent { event: We::KeyboardInput { input, .. }, .. } => match input {
@@ -234,7 +232,7 @@ fn three_dimensions() {
             E::RedrawEventsCleared => {
                 let before = std::time::Instant::now();
                 let view = Mat4::from_translation([0., 0., 0.5].into()) // push deeper
-                    * Mat4::from_scale([0.3, 0.3, 0.01].into()) // squash_axes
+                    * Mat4::from_scale([0.3, 0.3, 0.1].into()) // squash_axes
                     * Mat4::from_rotation_z(t as f32 / 1_000.)
                     * Mat4::from_rotation_x(t as f32 / 200.)
                     * Mat4::from_rotation_y(t as f32 / 70.);

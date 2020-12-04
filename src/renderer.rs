@@ -84,8 +84,8 @@ impl AsU32Slice for Mat4 {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VertCoord {
-    pub model_coord: [f32; 3],
     pub tex_coord: [f32; 2],
+    pub model_coord: [f32; 3],
 }
 
 #[repr(C)]
@@ -246,13 +246,10 @@ impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
         capacity: u32,
     ) -> Self {
         let stride = mem::size_of::<T>();
-        let mut buffer = unsafe {
-            device.create_buffer(
-                padded_len(capacity as usize * stride, limits.non_coherent_atom_size) as u64,
-                hal::buffer::Usage::VERTEX,
-            )
-        }
-        .unwrap();
+        let padded_len =
+            padded_len(capacity as usize * stride, limits.non_coherent_atom_size) as u64;
+        let mut buffer =
+            unsafe { device.create_buffer(padded_len, hal::buffer::Usage::VERTEX) }.unwrap();
         let buffer_req = unsafe { device.get_buffer_requirements(&buffer) };
         let upload_type =
             mem_type_for_buffer(memory_types, &buffer_req, m::Properties::CPU_VISIBLE).unwrap();
@@ -529,7 +526,7 @@ impl<B: hal::Backend> Renderer<B> {
                         binding: 0,
                         element: pso::Element {
                             format: f::Format::Rg32Sfloat,
-                            offset: mem::size_of::<[f32; 3]>() as u32,
+                            offset: mem::size_of::<[f32; 2]>() as u32,
                         },
                     });
                     for i in 0..4 {
@@ -692,7 +689,9 @@ impl<B: hal::Backend> Renderer<B> {
         Self: HasVertexBufferFor<B, T>,
         T: Copy,
     {
-        if let Some(max_size) = (self.get_vertex_buffer_cap() as usize).checked_sub(start) {
+        let cap = HasVertexBufferFor::<B, T>::get_vertex_buffer_cap(self) as usize;
+        println!("size {:?} has cap {:?}", mem::size_of::<T>(), cap);
+        if let Some(max_size) = (cap).checked_sub(start) {
             self.await_prev_fence();
             unsafe {
                 self.get_vertex_buffer_bundle().write_buffer(

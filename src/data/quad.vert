@@ -8,8 +8,8 @@ layout(push_constant) uniform PushConstants {
     vec4 trans_3;
 } pc;
 
-layout(location = 0) in vec3 model_coord;
-layout(location = 1) in vec2 tex_coord;
+layout(location = 0) in vec2 tex_coord;
+layout(location = 1) in vec3 model_coord;
 
 layout(location = 2) in vec4 inst_0;
 layout(location = 3) in vec4 inst_1;
