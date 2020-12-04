@@ -173,12 +173,12 @@ fn three_dimensions() {
             },
         );
     let max_tri_verts = vert_coord_iter.clone().count() as u32;
-    const MAX_INSTANCES: u32 = 10_000;
+    const MAX_INSTANCES: u32 = 5_000;
     let mut rng = rand::thread_rng();
     use rand::Rng;
     let rot_dist = rand::distributions::Uniform::new(0., PI * 2.);
     let translate_dist = rand::distributions::Uniform::new(-2., 2.);
-    let scale_dist = rand::distributions::Uniform::new(0.02, 0.1);
+    let scale_dist = rand::distributions::Uniform::new(0.01, 0.18);
     let sprite_index = rand::distributions::Uniform::from(0..3);
 
     let mut renderer = Renderer::new(instance, surface, adapter, max_tri_verts, MAX_INSTANCES);
@@ -201,7 +201,7 @@ fn three_dimensions() {
                 * Mat4::from_rotation_z(rng.sample(&rot_dist))
                 * Mat4::from_scale({
                     let n = rng.sample(&scale_dist);
-                    [n; 3].into()
+                    [n * n; 3].into()
                 })
         })
         .take(MAX_INSTANCES as usize),
@@ -239,14 +239,24 @@ fn three_dimensions() {
                 let views = [
                     Mat4::from_translation([0., 0., 0.5].into()) // push deeper
                     * Mat4::from_scale([1., 1., 0.2].into()) // squash_axes
-                    * Mat4::from_rotation_z(t as f32 / 19_000.)
-                    * Mat4::from_rotation_x(t as f32 / 9_000.)
-                    * Mat4::from_rotation_y(t as f32 / 11_000.),
+                    * Mat4::from_rotation_z(t as f32 / 70_000.)
+                    * Mat4::from_rotation_x(t as f32 / 64_000.)
+                    * Mat4::from_rotation_y(t as f32 / 55_000.),
                     Mat4::from_translation([0., 0., 0.5].into()) // push deeper
                     * Mat4::from_scale([1., 1., 0.2].into()) // squash_axes
-                    * Mat4::from_rotation_z(t as f32 / -100_000.)
-                    * Mat4::from_rotation_x(t as f32 / 17_000.)
-                    * Mat4::from_rotation_y(t as f32 / -28_000.),
+                    * Mat4::from_rotation_z(t as f32 / -43_000.)
+                    * Mat4::from_rotation_x(t as f32 / 88_000.)
+                    * Mat4::from_rotation_y(t as f32 / 92_000.),
+                    Mat4::from_translation([0., 0., 0.5].into()) // push deeper
+                    * Mat4::from_scale([1., 1., 0.2].into()) // squash_axes
+                    * Mat4::from_rotation_z(t as f32 / 76_000.)
+                    * Mat4::from_rotation_x(t as f32 / -81_000.)
+                    * Mat4::from_rotation_y(t as f32 / -83_000.),
+                    Mat4::from_translation([0., 0., 0.5].into()) // push deeper
+                    * Mat4::from_scale([1., 1., 0.2].into()) // squash_axes
+                    * Mat4::from_rotation_z(t as f32 / -59_000.)
+                    * Mat4::from_rotation_x(t as f32 / 66_000.)
+                    * Mat4::from_rotation_y(t as f32 / -71_000.),
                 ];
                 let passes = views
                     .iter()

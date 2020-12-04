@@ -949,7 +949,6 @@ impl<B: hal::Backend> Renderer<B> {
                     0,
                     view_transform.as_u32_slice(),
                 );
-                println!("drawing {:?}", [vertex_range.clone(), instance_range.clone()]);
                 per_fif.cmd_buffer.draw(vertex_range, instance_range);
             }
             per_fif.cmd_buffer.end_render_pass();
