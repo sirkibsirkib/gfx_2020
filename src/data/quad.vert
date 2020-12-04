@@ -8,8 +8,8 @@ layout(push_constant) uniform PushConstants {
     vec4 trans_3;
 } pc;
 
-layout(location = 0) in vec2 a_pos;
-layout(location = 1) in vec2 a_uv;
+layout(location = 0) in vec3 model_coord;
+layout(location = 1) in vec2 tex_coord;
 
 layout(location = 2) in vec4 inst_0;
 layout(location = 3) in vec4 inst_1;
@@ -25,10 +25,10 @@ out gl_PerVertex {
 };
 
 void main() {
-    v_uv = tex_scissor_top_left + (a_uv * tex_scissor_size);
-    vec4 pos = vec4(a_pos, 0.0, 1.0);
+    v_uv = tex_scissor_top_left + (tex_coord * tex_scissor_size);
+    vec4 coord = vec4(model_coord, 1.0);
     mat4 inst = mat4(inst_0, inst_1, inst_2 ,inst_3);
     mat4 view = mat4(pc.trans_0, pc.trans_1, pc.trans_2, pc.trans_3);
-    gl_Position = view * inst * pos;
+    gl_Position = view * inst * coord;
 }
 

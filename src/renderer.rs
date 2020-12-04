@@ -20,14 +20,48 @@ use {
     },
 };
 
+pub trait HasVertexBufferFor<B: hal::Backend, T: Copy> {
+    fn get_vertex_buffer_cap(&self) -> u32;
+    fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<T, B>;
+}
+impl<B: hal::Backend> HasVertexBufferFor<B, VertCoord> for Renderer<B> {
+    fn get_vertex_buffer_cap(&self) -> u32 {
+        self.max_tri_verts
+    }
+    fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<VertCoord, B> {
+        &self.inner.vertex_buffer_bundles.vc
+    }
+}
+impl<B: hal::Backend> HasVertexBufferFor<B, Mat4> for Renderer<B> {
+    fn get_vertex_buffer_cap(&self) -> u32 {
+        self.max_instances
+    }
+    fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<Mat4, B> {
+        &self.inner.vertex_buffer_bundles.m4
+    }
+}
+impl<B: hal::Backend> HasVertexBufferFor<B, TexScissor> for Renderer<B> {
+    fn get_vertex_buffer_cap(&self) -> u32 {
+        self.max_instances
+    }
+    fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<TexScissor, B> {
+        &self.inner.vertex_buffer_bundles.ts
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DrawInfo<'a> {
     pub view_transform: &'a Mat4,
+    pub vertex_range: Range<u32>,
     pub instance_range: Range<u32>,
 }
 impl<'a> DrawInfo<'a> {
-    pub fn new(view_transform: &'a Mat4, instance_range: Range<u32>) -> Self {
-        Self { view_transform, instance_range }
+    pub fn new(
+        view_transform: &'a Mat4,
+        vertex_range: Range<u32>,
+        instance_range: Range<u32>,
+    ) -> Self {
+        Self { view_transform, vertex_range, instance_range }
     }
 }
 
@@ -49,11 +83,9 @@ impl AsU32Slice for Mat4 {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-#[allow(non_snake_case)]
-struct TriangleVertData {
-    // 4*2*2-16 bytes
-    a_Pos: [f32; 2], // on screen
-    a_Uv: [f32; 2],  // in texture
+pub struct VertCoord {
+    pub model_coord: [f32; 3],
+    pub tex_coord: [f32; 2],
 }
 
 #[repr(C)]
@@ -62,20 +94,40 @@ pub struct TexScissor {
     pub top_left: [f32; 2],
     pub size: [f32; 2],
 }
+impl core::ops::Mul<Self> for TexScissor {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        use glam::Vec2;
+        let size = *(Vec2::from(self.size) * Vec2::from(rhs.size)).as_ref();
+        Self { top_left: self * rhs.top_left, size }
+    }
+}
+impl core::ops::Mul<[f32; 2]> for TexScissor {
+    type Output = [f32; 2];
+    fn mul(self, rhs: [f32; 2]) -> [f32; 2] {
+        use glam::Vec2;
+        let tl = Vec2::from(self.top_left);
+        let sz = Vec2::from(self.size);
+        let pt = Vec2::from(rhs);
+        *(tl + sz * pt).as_ref()
+    }
+}
+
 impl Default for TexScissor {
     fn default() -> Self {
         Self { top_left: [0.; 2], size: [1.; 2] }
     }
 }
 
-mod tri_vert_consts {
-    use super::TriangleVertData;
+pub mod vert_coord_consts {
+    use super::VertCoord;
+
     const D: f32 = 0.5; // consider changing s.t. up is +y for later (more standard)
-    const TL: TriangleVertData = TriangleVertData { a_Pos: [-D, -D], a_Uv: [0.0, 0.0] };
-    const TR: TriangleVertData = TriangleVertData { a_Pos: [D, -D], a_Uv: [1.0, 0.0] };
-    const BR: TriangleVertData = TriangleVertData { a_Pos: [D, D], a_Uv: [1.0, 1.0] };
-    const BL: TriangleVertData = TriangleVertData { a_Pos: [-D, D], a_Uv: [0.0, 1.0] };
-    pub(super) const QUAD: [TriangleVertData; 6] = [BR, TR, TL, TL, BL, BR];
+    const TL: VertCoord = VertCoord { model_coord: [-D, -D, 0.], tex_coord: [0.0, 0.0] };
+    const TR: VertCoord = VertCoord { model_coord: [D, -D, 0.], tex_coord: [1.0, 0.0] };
+    const BR: VertCoord = VertCoord { model_coord: [D, D, 0.], tex_coord: [1.0, 1.0] };
+    const BL: VertCoord = VertCoord { model_coord: [-D, D, 0.], tex_coord: [0.0, 1.0] };
+    pub const UNIT_QUAD: [VertCoord; 6] = [BR, TR, TL, TL, BL, BR];
 }
 
 trait DeviceDestroy<T> {
@@ -91,19 +143,18 @@ struct PerFif<B: hal::Backend> {
 }
 
 #[derive(Debug)]
-struct VertexBufferBundle<T, B: hal::Backend> {
-    buffer: B::Buffer,
-    memory: B::Memory,
-    buffered_type_phantom: PhantomData<T>,
-    transfer: VertexBufferTransfer<T>,
+pub struct VertexBufferBundles<B: hal::Backend> {
+    vc: VertexBufferBundle<VertCoord, B>,
+    m4: VertexBufferBundle<Mat4, B>,
+    ts: VertexBufferBundle<TexScissor, B>,
 }
 
 #[derive(Debug)]
-enum VertexBufferTransfer<T> {
-    Coherent { mapping_ptr: *mut T },
-    // Staged {
-
-    // }
+pub struct VertexBufferBundle<T, B: hal::Backend> {
+    buffer: B::Buffer,
+    memory: B::Memory,
+    buffered_type_phantom: PhantomData<T>,
+    mapping_ptr: *mut T,
 }
 
 #[derive(Debug)]
@@ -123,6 +174,7 @@ pub struct Renderer<B: hal::Backend> {
     desc_set: B::DescriptorSet,
     inner: ManuallyDrop<RendererInner<B>>,
     max_instances: u32,
+    max_tri_verts: u32,
 }
 
 /// Things that must be manually dropped, because they correspond to Gfx resources
@@ -137,9 +189,7 @@ struct RendererInner<B: hal::Backend> {
     surface: B::Surface,
     cmd_pool: B::CommandPool,
     set_layout: B::DescriptorSetLayout,
-    triangle_vertex_buffer_bundle: VertexBufferBundle<TriangleVertData, B>,
-    instance_t_buffer_bundle: VertexBufferBundle<Mat4, B>,
-    instance_s_buffer_bundle: VertexBufferBundle<TexScissor, B>,
+    vertex_buffer_bundles: VertexBufferBundles<B>,
     sampler: B::Sampler,
     tex_arena: SimpleArena<ImageBundle<B>>,
     per_fif: Vec<PerFif<B>>,
@@ -171,21 +221,25 @@ impl<B: hal::Backend> DeviceDestroy<ImageBundle<B>> for B::Device {
         self.destroy_image_view(view);
     }
 }
+impl<B: hal::Backend> DeviceDestroy<VertexBufferBundles<B>> for B::Device {
+    unsafe fn device_destroy(&mut self, vb: VertexBufferBundles<B>) {
+        let VertexBufferBundles { vc, m4, ts } = vb;
+        self.device_destroy(vc);
+        self.device_destroy(m4);
+        self.device_destroy(ts);
+    }
+}
 impl<T, B: hal::Backend> DeviceDestroy<VertexBufferBundle<T, B>> for B::Device {
     unsafe fn device_destroy(&mut self, vbb: VertexBufferBundle<T, B>) {
-        let VertexBufferBundle { buffer, memory, transfer, buffered_type_phantom: _ } = vbb;
-        match transfer {
-            VertexBufferTransfer::Coherent { mapping_ptr: _ } => {
-                self.unmap_memory(&memory);
-            }
-        }
+        let VertexBufferBundle { buffer, memory, buffered_type_phantom: _, mapping_ptr: _ } = vbb;
+        self.unmap_memory(&memory);
         self.destroy_buffer(buffer);
         self.free_memory(memory);
     }
 }
 
 impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
-    fn new(
+    pub fn new(
         device: &B::Device,
         limits: &hal::Limits,
         memory_types: &Vec<hal::adapter::MemoryType>,
@@ -205,12 +259,7 @@ impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
         let memory = unsafe { device.allocate_memory(upload_type, buffer_req.size) }.unwrap();
         unsafe { device.bind_buffer_memory(&memory, 0, &mut buffer) }.unwrap();
         let mapping_ptr = unsafe { device.map_memory(&memory, m::Segment::ALL).unwrap() as *mut T };
-        VertexBufferBundle {
-            buffer,
-            memory,
-            buffered_type_phantom: PhantomData,
-            transfer: VertexBufferTransfer::Coherent { mapping_ptr },
-        }
+        VertexBufferBundle { buffer, memory, buffered_type_phantom: PhantomData, mapping_ptr }
     }
 
     unsafe fn write_buffer(
@@ -218,26 +267,23 @@ impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
         device: &B::Device,
         start_offset: usize,
         bounds_checked_iter: impl Iterator<Item = T>,
-    ) {
-        match self.transfer {
-            VertexBufferTransfer::Coherent { mapping_ptr } => {
-                let mut end_offset = start_offset;
-                for data in bounds_checked_iter {
-                    mapping_ptr.add(end_offset).write(data);
-                    end_offset += 1;
-                }
-                let stride = mem::size_of::<T>() as u64;
-                device
-                    .flush_mapped_memory_ranges(iter::once((
-                        &self.memory,
-                        m::Segment {
-                            offset: start_offset as u64 * stride,
-                            size: Some((end_offset - start_offset) as u64 * stride),
-                        },
-                    )))
-                    .unwrap();
-            }
+    ) -> usize {
+        let mut count_written = 0;
+        for data in bounds_checked_iter {
+            self.mapping_ptr.add(start_offset + count_written).write(data);
+            count_written += 1;
         }
+        let stride = mem::size_of::<T>() as u64;
+        device
+            .flush_mapped_memory_ranges(iter::once((
+                &self.memory,
+                m::Segment {
+                    offset: start_offset as u64 * stride,
+                    size: Some(count_written as u64 * stride),
+                },
+            )))
+            .unwrap();
+        count_written
     }
 }
 
@@ -246,6 +292,7 @@ impl<B: hal::Backend> Renderer<B> {
         instance: B::Instance,
         mut surface: B::Surface,
         adapter: hal::adapter::Adapter<B>,
+        max_tri_verts: u32,
         max_instances: u32,
     ) -> Self {
         let memory_types = adapter.physical_device.memory_properties().memory_types;
@@ -324,25 +371,11 @@ impl<B: hal::Backend> Renderer<B> {
 
         ///////////////////////////////////////////////////////
         // ALLOCATE AND INIT VERTEX BUFFER
-
-        let triangle_vertex_buffer_bundle =
-            VertexBufferBundle::<TriangleVertData, B>::new(&device, &limits, &memory_types, 6);
-        unsafe {
-            triangle_vertex_buffer_bundle.write_buffer(
-                &device,
-                0,
-                tri_vert_consts::QUAD.iter().copied(),
-            )
+        let vertex_buffer_bundles = VertexBufferBundles {
+            vc: VertexBufferBundle::new(&device, &limits, &memory_types, max_tri_verts),
+            m4: VertexBufferBundle::new(&device, &limits, &memory_types, max_instances),
+            ts: VertexBufferBundle::new(&device, &limits, &memory_types, max_instances),
         };
-
-        let instance_t_buffer_bundle =
-            VertexBufferBundle::<Mat4, B>::new(&device, &limits, &memory_types, max_instances);
-        let instance_s_buffer_bundle = VertexBufferBundle::<TexScissor, B>::new(
-            &device,
-            &limits,
-            &memory_types,
-            max_instances,
-        );
 
         let formats = surface.supported_formats(&adapter.physical_device);
         let format = formats.map_or(f::Format::Rgba8Srgb, |formats| {
@@ -470,7 +503,7 @@ impl<B: hal::Backend> Renderer<B> {
                 let buffers = &[
                     pso::VertexBufferDesc {
                         binding: 0,
-                        stride: mem::size_of::<TriangleVertData>() as u32,
+                        stride: mem::size_of::<VertCoord>() as u32,
                         rate: VertexInputRate::Vertex,
                     },
                     pso::VertexBufferDesc {
@@ -486,16 +519,19 @@ impl<B: hal::Backend> Renderer<B> {
                 ];
                 let attributes = &{
                     let mut attributes = vec![];
-                    for i in 0..2 {
-                        attributes.push(pso::AttributeDesc {
-                            location: i,
-                            binding: 0,
-                            element: pso::Element {
-                                format: f::Format::Rg32Sfloat,
-                                offset: i * mem::size_of::<[f32; 2]>() as u32,
-                            },
-                        });
-                    }
+                    attributes.push(pso::AttributeDesc {
+                        location: 0,
+                        binding: 0,
+                        element: pso::Element { format: f::Format::Rg32Sfloat, offset: 0 },
+                    });
+                    attributes.push(pso::AttributeDesc {
+                        location: 1,
+                        binding: 0,
+                        element: pso::Element {
+                            format: f::Format::Rg32Sfloat,
+                            offset: mem::size_of::<[f32; 3]>() as u32,
+                        },
+                    });
                     for i in 0..4 {
                         attributes.push(pso::AttributeDesc {
                             location: i + 2,
@@ -615,7 +651,7 @@ impl<B: hal::Backend> Renderer<B> {
         let per_fif = iter::repeat_with(new_per_fif).take(frames_in_flight).collect();
         Renderer {
             max_instances,
-            // upload_type,
+            max_tri_verts,
             device,
             queue_group,
             adapter,
@@ -629,9 +665,7 @@ impl<B: hal::Backend> Renderer<B> {
                 render_pass,
                 desc_pool,
                 set_layout,
-                triangle_vertex_buffer_bundle,
-                instance_t_buffer_bundle,
-                instance_s_buffer_bundle,
+                vertex_buffer_bundles,
                 pipeline,
                 pipeline_layout,
                 sampler,
@@ -642,54 +676,48 @@ impl<B: hal::Backend> Renderer<B> {
         }
     }
 
-    pub fn write_instance_t_buffer(
+    fn await_prev_fence(&self) {
+        let fif_index =
+            self.inner.next_fif_index.checked_sub(1).unwrap_or(self.inner.per_fif.len() - 1);
+        let per_fif = &self.inner.per_fif[fif_index];
+        unsafe { self.device.wait_for_fence(&per_fif.fence, !0).expect("Can't wait for fence") };
+    }
+
+    pub fn write_vertex_buffer<T>(
         &mut self,
         start: usize,
-        data: impl IntoIterator<Item = Mat4>,
-    ) -> Result<(), ()> {
-        if let Some(max_size) = (self.max_instances as usize).checked_sub(start) {
+        data: impl IntoIterator<Item = T>,
+    ) -> usize
+    where
+        Self: HasVertexBufferFor<B, T>,
+        T: Copy,
+    {
+        if let Some(max_size) = (self.get_vertex_buffer_cap() as usize).checked_sub(start) {
+            self.await_prev_fence();
             unsafe {
-                // TODO await previous frame
-                self.inner.instance_t_buffer_bundle.write_buffer(
+                self.get_vertex_buffer_bundle().write_buffer(
                     &self.device,
                     start,
                     data.into_iter().take(max_size),
                 )
             }
-            Ok(())
         } else {
-            Err(())
+            0
         }
     }
 
-    pub fn write_instance_s_buffer(
-        &mut self,
-        start: usize,
-        data: impl IntoIterator<Item = TexScissor>,
-    ) -> Result<(), ()> {
-        if let Some(max_size) = (self.max_instances as usize).checked_sub(start) {
-            unsafe {
-                // TODO await previous frame
-                self.inner.instance_s_buffer_bundle.write_buffer(
-                    &self.device,
-                    start,
-                    data.into_iter().take(max_size),
-                )
-            }
-            Ok(())
-        } else {
-            Err(())
-        }
+    // Attempt to unload the given Rgba texture image from the GPU, given the image's index.
+    pub fn unload_texture(&mut self, index: usize) -> Result<(), ()> {
+        let image_bundle = self.inner.tex_arena.remove(index).ok_or(())?;
+        unsafe { self.device.device_destroy(image_bundle) };
+        Ok(())
     }
 
-    pub fn remove_image(&mut self, index: usize) -> bool {
-        self.inner.tex_arena.remove(index).is_some()
-    }
-
-    pub fn add_image(
+    // Load the given texture image to the GPU, and return its index.
+    pub fn load_texture(
         &mut self,
-        img_rgba: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
-    ) -> std::io::Result<usize> {
+        img_rgba: &image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+    ) -> usize {
         let memory_types = self.adapter.physical_device.memory_properties().memory_types;
         let limits = self.adapter.physical_device.limits();
 
@@ -722,7 +750,7 @@ impl<B: hal::Backend> Renderer<B> {
             self.device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
             let mapping = self.device.map_memory(&memory, m::Segment::ALL).unwrap();
             for y in 0..height as usize {
-                let row = &(*img_rgba)[y * (width as usize) * image_stride
+                let row = &(**img_rgba)[y * (width as usize) * image_stride
                     ..(y + 1) * (width as usize) * image_stride];
                 std::ptr::copy_nonoverlapping(
                     row.as_ptr(),
@@ -829,17 +857,18 @@ impl<B: hal::Backend> Renderer<B> {
             drop(img_rgba);
         }
         unsafe { self.device.free_memory(image_upload_memory) };
-        Ok(self.inner.tex_arena.add(ImageBundle { image, memory, view }))
+        self.inner.tex_arena.add(ImageBundle { image, memory, view })
     }
 
     pub fn render_instances<'a>(
         &mut self,
-        image_index: usize,
+        texture_index: usize,
         draw_info_iter: impl IntoIterator<Item = DrawInfo<'a>>,
     ) -> Result<(), RenderErr> {
         let inner = &mut *self.inner;
-        let per_fif =
-            inner.per_fif.get_mut(inner.next_fif_index).ok_or(RenderErr::UnknownTextureIndex)?;
+        let tex_image_bundle: &ImageBundle<B> =
+            inner.tex_arena.get(texture_index).ok_or(RenderErr::UnknownTextureIndex)?;
+        let per_fif = inner.per_fif.get_mut(inner.next_fif_index).expect("next FIF out of range");
         let (surface_image, _) = unsafe { inner.surface.acquire_image(!0) }.unwrap();
         unsafe {
             self.device.wait_for_fence(&per_fif.fence, !0).expect("Failed to wait for fence");
@@ -858,7 +887,6 @@ impl<B: hal::Backend> Renderer<B> {
                 .unwrap()
         };
 
-        let tex_image_bundle: &ImageBundle<B> = inner.tex_arena.get(image_index).unwrap();
         unsafe {
             self.device.write_descriptor_sets(iter::once(pso::DescriptorSetWrite {
                 set: &self.desc_set,
@@ -882,9 +910,9 @@ impl<B: hal::Backend> Renderer<B> {
             per_fif.cmd_buffer.set_scissors(0, &[self.viewport.rect]); // TODO mess with this and see if it crops
             per_fif.cmd_buffer.bind_graphics_pipeline(&inner.pipeline);
             let vert_bindings = [
-                &inner.triangle_vertex_buffer_bundle.buffer,
-                &inner.instance_t_buffer_bundle.buffer,
-                &inner.instance_s_buffer_bundle.buffer,
+                &inner.vertex_buffer_bundles.vc.buffer,
+                &inner.vertex_buffer_bundles.m4.buffer,
+                &inner.vertex_buffer_bundles.ts.buffer,
             ];
             let vert_binding_iter =
                 vert_bindings.iter().map(|&b| (b, hal::buffer::SubRange::WHOLE));
@@ -910,17 +938,17 @@ impl<B: hal::Backend> Renderer<B> {
                 ],
                 command::SubpassContents::Inline,
             );
-            for DrawInfo { view_transform, instance_range } in draw_info_iter {
-                if instance_range.end > self.max_instances {
-                    continue;
-                }
+            for DrawInfo { view_transform, mut vertex_range, mut instance_range } in draw_info_iter
+            {
+                vertex_range.end = vertex_range.end.min(self.max_tri_verts);
+                instance_range.end = instance_range.end.min(self.max_instances);
                 per_fif.cmd_buffer.push_graphics_constants(
                     &inner.pipeline_layout,
                     ShaderStageFlags::VERTEX,
                     0,
                     view_transform.as_u32_slice(),
                 );
-                per_fif.cmd_buffer.draw(0..6, instance_range);
+                per_fif.cmd_buffer.draw(vertex_range, instance_range);
             }
             per_fif.cmd_buffer.end_render_pass();
             per_fif.cmd_buffer.finish();
@@ -952,9 +980,7 @@ impl<B: hal::Backend> Drop for Renderer<B> {
             let mut inner = ManuallyDrop::take(&mut self.inner);
             self.device.destroy_descriptor_pool(inner.desc_pool);
             self.device.destroy_descriptor_set_layout(inner.set_layout);
-            self.device.device_destroy(inner.triangle_vertex_buffer_bundle);
-            self.device.device_destroy(inner.instance_t_buffer_bundle);
-            self.device.device_destroy(inner.instance_s_buffer_bundle);
+            self.device.device_destroy(inner.vertex_buffer_bundles);
             for tex_image_bundle in inner.tex_arena.into_iter() {
                 self.device.device_destroy(tex_image_bundle);
             }
