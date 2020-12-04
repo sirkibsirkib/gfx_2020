@@ -175,7 +175,6 @@ fn three_dimensions() {
     let tex_scissors = (0..3).flat_map(move |i| {
         (0..2).map(move |j| TexScissor { size, top_left: [i as f32 / 3., j as f32 / 2.] })
     });
-
     let translate_up = Mat4::from_translation([0., 0., -0.5].into());
     let vert_coord_iter =
         quad_rots.iter().map(|&quad_rot| quad_rot * translate_up).zip(tex_scissors).flat_map(
@@ -188,30 +187,42 @@ fn three_dimensions() {
                 })
             },
         );
+    for p in vert_coord_iter.clone() {
+        println!("-- {:#?}", p);
+    }
     let max_tri_verts = (quad_rots.len() * vert_coord_consts::UNIT_QUAD.len()) as u32;
     assert_eq!(max_tri_verts, 6 * 6);
-    const MAX_INSTANCES: u32 = 1;
+    const MAX_INSTANCES: u32 = 3;
     let mut renderer = Renderer::new(instance, surface, adapter, max_tri_verts, MAX_INSTANCES);
     let img_rgba =
         image::io::Reader::open("./src/data/3d.png").unwrap().decode().unwrap().to_rgba();
     renderer.load_texture(&img_rgba);
-    renderer.write_vertex_buffer(0, vert_coord_iter);
-    renderer.write_vertex_buffer(0, std::iter::once(Mat4::identity()));
+    renderer.write_vertex_buffer(6, vert_coord_iter.take(6));
     renderer.write_vertex_buffer(
         0,
-        std::iter::once(TexScissor { top_left: [0., 0.], size: [THIRD, 1.] }),
+        [
+            Mat4::identity(),
+            Mat4::from_translation([2., 0., 0.].into()),
+            Mat4::from_translation([0., 2., 0.].into()),
+        ]
+        .iter()
+        .copied(),
     );
-    let view = Mat4::from_translation([0., 0., 0.5].into()) // push deeper
-        * Mat4::from_rotation_x(PI / 4.) // 45 degree angle
-        * Mat4::from_rotation_y(PI / 4.) // 45 degree angle
-        * Mat4::from_scale([0.2; 3].into()); // scale everything
+    renderer.write_vertex_buffer(
+        0,
+        std::iter::repeat(TexScissor { top_left: [0., 0.], size: [THIRD, 1.] }).take(3),
+    );
+
+    let mut t = 0;
     event_loop.run(move |event, _, control_flow| {
         println!("{:?}", event);
         use winit::{
             event::{Event as E, KeyboardInput as Ki, VirtualKeyCode as Vkc, WindowEvent as We},
             event_loop::ControlFlow,
         };
-        *control_flow = ControlFlow::Wait;
+        *control_flow = ControlFlow::WaitUntil(
+            std::time::Instant::now() + std::time::Duration::from_millis(16),
+        );
         match event {
             E::WindowEvent { event: We::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
             E::WindowEvent { event: We::KeyboardInput { input, .. }, .. } => match input {
@@ -222,6 +233,11 @@ fn three_dimensions() {
             E::WindowEvent { event: We::Resized(_), .. } => unreachable!(),
             E::RedrawEventsCleared => {
                 let before = std::time::Instant::now();
+                let view = Mat4::from_translation([0., 0., 0.5].into()) // push deeper
+                    * Mat4::from_scale([0.3, 0.3, 0.01].into()) // squash_axes
+                    * Mat4::from_rotation_z(t as f32 / 1_000.)
+                    * Mat4::from_rotation_x(t as f32 / 200.)
+                    * Mat4::from_rotation_y(t as f32 / 70.);
                 renderer
                     .render_instances(
                         0,
@@ -229,6 +245,7 @@ fn three_dimensions() {
                     )
                     .unwrap();
                 println!("{:?}", before.elapsed());
+                t += 1;
             }
             _ => {}
         }

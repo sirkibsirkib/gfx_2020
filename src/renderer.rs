@@ -121,12 +121,12 @@ impl Default for TexScissor {
 
 pub mod vert_coord_consts {
     use super::VertCoord;
-
-    const D: f32 = 0.5; // consider changing s.t. up is +y for later (more standard)
-    const TL: VertCoord = VertCoord { model_coord: [-D, -D, 0.], tex_coord: [0.0, 0.0] };
-    const TR: VertCoord = VertCoord { model_coord: [D, -D, 0.], tex_coord: [1.0, 0.0] };
-    const BR: VertCoord = VertCoord { model_coord: [D, D, 0.], tex_coord: [1.0, 1.0] };
-    const BL: VertCoord = VertCoord { model_coord: [-D, D, 0.], tex_coord: [0.0, 1.0] };
+    const N: f32 = -0.5; // consider changing s.t. up is +y for later (more standard)
+    const P: f32 = 0.5;
+    const TL: VertCoord = VertCoord { model_coord: [N, N, 0.], tex_coord: [0., 0.] };
+    const TR: VertCoord = VertCoord { model_coord: [P, N, 0.], tex_coord: [1., 0.] };
+    const BR: VertCoord = VertCoord { model_coord: [P, P, 0.], tex_coord: [1., 1.] };
+    const BL: VertCoord = VertCoord { model_coord: [N, P, 0.], tex_coord: [0., 1.] };
     pub const UNIT_QUAD: [VertCoord; 6] = [BR, TR, TL, TL, BL, BR];
 }
 
@@ -572,7 +572,7 @@ impl<B: hal::Backend> Renderer<B> {
                     &pipeline_layout,
                     Subpass { index: 0, main_pass: &render_pass },
                 );
-                pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
+                // pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
                 pipeline_desc.depth_stencil = pso::DepthStencilDesc {
                     depth: Some(pso::DepthTest { fun: pso::Comparison::LessEqual, write: true }),
                     depth_bounds: false,
@@ -948,6 +948,7 @@ impl<B: hal::Backend> Renderer<B> {
                     0,
                     view_transform.as_u32_slice(),
                 );
+                println!("drawing {:?}", [vertex_range.clone(), instance_range.clone()]);
                 per_fif.cmd_buffer.draw(vertex_range, instance_range);
             }
             per_fif.cmd_buffer.end_render_pass();
