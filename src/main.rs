@@ -323,7 +323,8 @@ fn fly_around() {
     let dist_scale = rand::distributions::Uniform::new(0.01, 1.1);
 
     let mut renderer = Renderer::new(instance, surface, adapter, max_tri_verts, MAX_INSTANCES);
-    let img_rgba = image::io::Reader::open("data/3d.png").unwrap().decode().unwrap().to_rgba();
+    let img_rgba =
+        image::io::Reader::open("./src/data/3d.png").unwrap().decode().unwrap().to_rgba();
     renderer.load_texture(&img_rgba);
     renderer.write_vertex_buffer(0, vert_coord_iter);
     renderer.write_vertex_buffer(
@@ -475,7 +476,7 @@ fn fly_around() {
                 ent.position += ent.velocity;
             }
             E::RedrawEventsCleared => {
-                // let before = std::time::Instant::now();
+                let before = std::time::Instant::now();
                 let views = [{
                     let look_at = {
                         let eye = ent.position;
@@ -489,7 +490,7 @@ fn fly_around() {
                     .iter()
                     .map(|view| DrawInfo::new(view, 0..max_tri_verts, 0..MAX_INSTANCES));
                 renderer.render_instances(0, passes).unwrap();
-                // println!("{:?}", before.elapsed());
+                println!("{:?}", before.elapsed());
             }
             _ => {}
         }
