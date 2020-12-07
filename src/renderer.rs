@@ -304,10 +304,10 @@ impl<B: hal::Backend> Renderer<B> {
                 surface.supports_queue_family(family) && family.queue_type().supports_graphics()
             })
             .unwrap();
-        for (i, fam) in adapter.queue_families.iter().enumerate() {
-            println!("fam {}: {:#?}", i, fam);
-        }
-        dbg!(&memory_types, &limits, &family);
+        // for (i, fam) in adapter.queue_families.iter().enumerate() {
+        //     println!("fam {}: {:#?}", i, fam);
+        // }
+        // dbg!(&memory_types, &limits, &family);
         let (queue_group, device) = {
             let mut gpu = unsafe {
                 adapter.physical_device.open(&[(family, &[1.0])], hal::Features::empty()).unwrap()
@@ -545,7 +545,7 @@ impl<B: hal::Backend> Renderer<B> {
                             location: i + 2 + 4,
                             binding: 2,
                             element: pso::Element {
-                                format: f::Format::Rgba32Sfloat,
+                                format: f::Format::Rg32Sfloat,
                                 offset: i * mem::size_of::<[f32; 2]>() as u32,
                             },
                         });
@@ -570,7 +570,7 @@ impl<B: hal::Backend> Renderer<B> {
                     &pipeline_layout,
                     Subpass { index: 0, main_pass: &render_pass },
                 );
-                pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
+                // pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
                 pipeline_desc.depth_stencil = pso::DepthStencilDesc {
                     depth: Some(pso::DepthTest { fun: pso::Comparison::LessEqual, write: true }),
                     depth_bounds: false,
@@ -691,7 +691,7 @@ impl<B: hal::Backend> Renderer<B> {
         T: Copy,
     {
         let cap = HasVertexBufferFor::<B, T>::get_vertex_buffer_cap(self) as usize;
-        println!("size {:?} has cap {:?}", mem::size_of::<T>(), cap);
+        // println!("size {:?} has cap {:?}", mem::size_of::<T>(), cap);
         if let Some(max_size) = (cap).checked_sub(start) {
             self.await_prev_fence();
             unsafe {
@@ -955,7 +955,7 @@ impl<B: hal::Backend> Renderer<B> {
             per_fif.cmd_buffer.finish();
             let submission = Submission {
                 command_buffers: iter::once(&per_fif.cmd_buffer),
-                wait_semaphores: None,
+                wait_semaphores: iter::empty(),
                 signal_semaphores: iter::once(&per_fif.semaphore),
             };
             self.queue_group.queues[0].submit(submission, Some(&per_fif.fence));

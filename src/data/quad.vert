@@ -8,17 +8,21 @@ layout(push_constant) uniform PushConstants {
     vec4 trans_3;
 } pc;
 
+// vertex input
 layout(location = 0) in vec2 tex_coord;
 layout(location = 1) in vec3 model_coord;
 
+// instance input A: transform
 layout(location = 2) in vec4 inst_0;
 layout(location = 3) in vec4 inst_1;
 layout(location = 4) in vec4 inst_2;
 layout(location = 5) in vec4 inst_3;
 
+// instance input B: texture scissor
 layout(location = 6) in vec2 tex_scissor_top_left;
 layout(location = 7) in vec2 tex_scissor_size;
 
+// vertex output
 layout(location = 0) out vec2 v_uv;
 out gl_PerVertex {
     vec4 gl_Position;
