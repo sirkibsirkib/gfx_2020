@@ -870,7 +870,14 @@ impl<B: hal::Backend> Renderer<B> {
         let tex_image_bundle: &ImageBundle<B> =
             inner.tex_arena.get(texture_index).ok_or(RenderErr::UnknownTextureIndex)?;
         let per_fif = inner.per_fif.get_mut(inner.next_fif_index).expect("next FIF out of range");
-        let (surface_image, _) = unsafe { inner.surface.acquire_image(!0) }.unwrap();
+        let surface_image =
+            if let Ok((surface_image, _)) = unsafe { inner.surface.acquire_image(1000) } {
+                surface_image
+            } else {
+                // println!("FAILURE");
+                return Ok(());
+            };
+        // println!("SUCCEE");
         unsafe {
             self.device.wait_for_fence(&per_fif.fence, !0).expect("Failed to wait for fence");
             self.device.reset_fence(&per_fif.fence).expect("Failed to reset fence");

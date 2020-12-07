@@ -1,9 +1,10 @@
 mod renderer;
 mod simple_arena;
 
+use std::time::{Duration, Instant};
 use {
     core::f32::consts::PI,
-    gfx_backend_vulkan as back,
+    gfx_backend_dx12 as back,
     gfx_hal::{self as hal, prelude::*},
     rand::{rngs::ThreadRng, Rng},
 };
@@ -116,7 +117,7 @@ fn rect_example() {
             },
             E::WindowEvent { event: We::Resized(_), .. } => unreachable!(),
             E::RedrawEventsCleared => {
-                let before = std::time::Instant::now();
+                let before = Instant::now();
                 renderer.write_vertex_buffer(
                     0,
                     std::iter::repeat_with(|| random_transform(&mut rng))
@@ -226,10 +227,10 @@ fn spinning_random_cubes() {
             event::{Event as E, KeyboardInput as Ki, VirtualKeyCode as Vkc, WindowEvent as We},
             event_loop::ControlFlow,
         };
-        *control_flow = ControlFlow::Poll;
         // Until(
-        //     std::time::Instant::now() + std::time::Duration::from_millis(16),
+        //     Instant::now() + Duration::from_millis(16),
         // );
+        *control_flow = ControlFlow::Poll;
         match event {
             E::WindowEvent { event: We::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
             E::WindowEvent { event: We::KeyboardInput { input, .. }, .. } => match input {
@@ -239,7 +240,7 @@ fn spinning_random_cubes() {
             },
             E::WindowEvent { event: We::Resized(_), .. } => unreachable!(),
             E::RedrawEventsCleared => {
-                let before = std::time::Instant::now();
+                let before = Instant::now();
                 let views = [
                     Mat4::from_translation([0., 0., 0.5].into()) // push deeper
                     * Mat4::from_scale([1., 1., 0.2].into()) // squash_axes
@@ -397,8 +398,8 @@ fn fly_around() {
     };
     // renderer.render_instances(0, std::iter::empty()).unwrap();
     let persp = Mat4::perspective_lh(1., 1., 0.5, 11.);
-    let [mut updates, mut frames] = [0; 2];
-    let started_at = std::time::Instant::now();
+    // let [mut updates, mut frames] = [0; 2];
+    // let started_at = Instant::now();
     event_loop.run(move |event, _, control_flow| {
         use winit::{
             event::{Event as E, KeyboardInput as Ki, VirtualKeyCode as Vkc, WindowEvent as We},
@@ -415,8 +416,12 @@ fn fly_around() {
                 }
             }
         }
-        *control_flow = ControlFlow::Poll;
+        const WAIT_DUR: Duration = Duration::from_millis(16);
+        // println!("{:?}", &event);
         match event {
+            E::NewEvents(winit::event::StartCause::Init) => {
+                *control_flow = ControlFlow::WaitUntil(Instant::now() + WAIT_DUR);
+            }
             E::WindowEvent { event: We::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
             E::WindowEvent { event: We::KeyboardInput { input, .. }, .. } => {
                 // println!("IN {:?}", &event);
@@ -440,15 +445,17 @@ fn fly_around() {
                 }
             }
             E::WindowEvent { event: We::Resized(_), .. } => unreachable!(),
-            E::MainEventsCleared => {
-                updates += 1;
-                if updates % 1024 == 0 {
-                    println!("UPS = {:?}", updates as f32 / started_at.elapsed().as_secs_f32());
-                }
+            E::RedrawEventsCleared => {}
+            E::NewEvents(winit::event::StartCause::ResumeTimeReached { .. }) => {
+                *control_flow = ControlFlow::WaitUntil(Instant::now() + WAIT_DUR);
+                // updates += 1;
+                // if updates % 16 == 0 {
+                //     println!("UPS = {:?}", updates as f32 / started_at.elapsed().as_secs_f32());
+                // }
                 // println!("MAIN {:?}", &event);
-                const ROT_CONST: f32 = 0.0000003;
-                const DAMP_MULT: f32 = 0.9997;
-                const VEL_CONST: f32 = 0.0000001;
+                const ROT_CONST: f32 = 0.01;
+                const DAMP_MULT: f32 = 0.97;
+                const VEL_CONST: f32 = 0.005;
 
                 let rotation_delta_delta = {
                     let mut q = Quat::identity();
@@ -484,14 +491,14 @@ fn fly_around() {
                 };
                 ent.velocity *= DAMP_MULT;
                 ent.position += ent.velocity;
-                // window.request_redraw();
-            }
-            E::RedrawEventsCleared => {
-                frames += 1;
-                if frames % 1024 == 0 {
-                    println!("FPS = {:?}", frames as f32 / started_at.elapsed().as_secs_f32());
-                }
-                // let before = std::time::Instant::now();
+                //     window.request_redraw();
+                // }
+                // E::RedrawEventsCleared => {
+                // frames += 1;
+                // if frames % 16 == 0 {
+                //     println!("FPS = {:?}", frames as f32 / started_at.elapsed().as_secs_f32());
+                // }
+                // let before = Instant::now();
                 let views = [{
                     let look_at = {
                         let eye = ent.position;
