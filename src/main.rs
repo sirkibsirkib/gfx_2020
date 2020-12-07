@@ -219,7 +219,6 @@ fn spinning_random_cubes() {
         })
         .take(MAX_INSTANCES as usize),
     );
-
     let mut t = 0;
     event_loop.run(move |event, _, control_flow| {
         // println!("{:?}", event);
@@ -352,8 +351,6 @@ fn fly_around() {
         })
         .take(MAX_INSTANCES as usize),
     );
-    let persp = Mat4::perspective_rh(1., 1., 0.5, 11.);
-
     #[derive(Debug)]
     struct AntagKeys {
         pos: winit::event::ElementState,
@@ -398,7 +395,10 @@ fn fly_around() {
         position: Vec3::default(),
         keys: Pressing::default(),
     };
-
+    // renderer.render_instances(0, std::iter::empty()).unwrap();
+    let persp = Mat4::perspective_lh(1., 1., 0.5, 11.);
+    let [mut updates, mut frames] = [0; 2];
+    let started_at = std::time::Instant::now();
     event_loop.run(move |event, _, control_flow| {
         use winit::{
             event::{Event as E, KeyboardInput as Ki, VirtualKeyCode as Vkc, WindowEvent as We},
@@ -415,27 +415,37 @@ fn fly_around() {
                 }
             }
         }
+        *control_flow = ControlFlow::Poll;
         match event {
-            E::NewEvents(_) => {
-                *control_flow = ControlFlow::Poll;
-            }
             E::WindowEvent { event: We::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
-            E::WindowEvent { event: We::KeyboardInput { input, .. }, .. } => match input {
-                Ki { virtual_keycode: Some(Vkc::Escape), .. } => *control_flow = ControlFlow::Exit,
-                Ki { virtual_keycode: Some(Vkc::Space), state, .. } => ent.keys.pitch.pos = state,
-                Ki { virtual_keycode: Some(Vkc::LControl), state, .. } => {
-                    ent.keys.pitch.neg = state
+            E::WindowEvent { event: We::KeyboardInput { input, .. }, .. } => {
+                // println!("IN {:?}", &event);
+                match input {
+                    Ki { virtual_keycode: Some(Vkc::Escape), .. } => {
+                        *control_flow = ControlFlow::Exit
+                    }
+                    Ki { virtual_keycode: Some(Vkc::Space), state, .. } => {
+                        ent.keys.pitch.pos = state
+                    }
+                    Ki { virtual_keycode: Some(Vkc::LControl), state, .. } => {
+                        ent.keys.pitch.neg = state
+                    }
+                    Ki { virtual_keycode: Some(Vkc::Q), state, .. } => ent.keys.roll.neg = state,
+                    Ki { virtual_keycode: Some(Vkc::E), state, .. } => ent.keys.roll.pos = state,
+                    Ki { virtual_keycode: Some(Vkc::D), state, .. } => ent.keys.yaw.pos = state,
+                    Ki { virtual_keycode: Some(Vkc::A), state, .. } => ent.keys.yaw.neg = state,
+                    Ki { virtual_keycode: Some(Vkc::W), state, .. } => ent.keys.thrust.pos = state,
+                    Ki { virtual_keycode: Some(Vkc::S), state, .. } => ent.keys.thrust.neg = state,
+                    _ => {}
                 }
-                Ki { virtual_keycode: Some(Vkc::Q), state, .. } => ent.keys.roll.neg = state,
-                Ki { virtual_keycode: Some(Vkc::E), state, .. } => ent.keys.roll.pos = state,
-                Ki { virtual_keycode: Some(Vkc::D), state, .. } => ent.keys.yaw.pos = state,
-                Ki { virtual_keycode: Some(Vkc::A), state, .. } => ent.keys.yaw.neg = state,
-                Ki { virtual_keycode: Some(Vkc::W), state, .. } => ent.keys.thrust.pos = state,
-                Ki { virtual_keycode: Some(Vkc::S), state, .. } => ent.keys.thrust.neg = state,
-                _ => {}
-            },
+            }
             E::WindowEvent { event: We::Resized(_), .. } => unreachable!(),
             E::MainEventsCleared => {
+                updates += 1;
+                if updates % 1024 == 0 {
+                    println!("UPS = {:?}", updates as f32 / started_at.elapsed().as_secs_f32());
+                }
+                // println!("MAIN {:?}", &event);
                 const ROT_CONST: f32 = 0.0000003;
                 const DAMP_MULT: f32 = 0.9997;
                 const VEL_CONST: f32 = 0.0000001;
@@ -448,13 +458,13 @@ fn fly_around() {
                         None => {}
                     }
                     match ent.keys.yaw.net_pos() {
-                        Some(true) => q *= Quat::from_rotation_z(ROT_CONST),
-                        Some(false) => q *= Quat::from_rotation_z(-ROT_CONST),
+                        Some(true) => q *= Quat::from_rotation_z(-ROT_CONST),
+                        Some(false) => q *= Quat::from_rotation_z(ROT_CONST),
                         None => {}
                     }
                     match ent.keys.roll.net_pos() {
-                        Some(true) => q *= Quat::from_rotation_x(-ROT_CONST),
-                        Some(false) => q *= Quat::from_rotation_x(ROT_CONST),
+                        Some(true) => q *= Quat::from_rotation_x(ROT_CONST),
+                        Some(false) => q *= Quat::from_rotation_x(-ROT_CONST),
                         None => {}
                     }
                     q
@@ -474,15 +484,20 @@ fn fly_around() {
                 };
                 ent.velocity *= DAMP_MULT;
                 ent.position += ent.velocity;
+                // window.request_redraw();
             }
             E::RedrawEventsCleared => {
-                let before = std::time::Instant::now();
+                frames += 1;
+                if frames % 1024 == 0 {
+                    println!("FPS = {:?}", frames as f32 / started_at.elapsed().as_secs_f32());
+                }
+                // let before = std::time::Instant::now();
                 let views = [{
                     let look_at = {
                         let eye = ent.position;
                         let center = eye + ent.rotation_state.mul_vec3(Vec3::new(1., 0., 0.));
                         let up = ent.rotation_state.mul_vec3(Vec3::new(0., 0., -1.));
-                        Mat4::look_at_rh(eye, center, up)
+                        Mat4::look_at_lh(eye, center, up)
                     };
                     persp * look_at
                 }];
@@ -490,7 +505,7 @@ fn fly_around() {
                     .iter()
                     .map(|view| DrawInfo::new(view, 0..max_tri_verts, 0..MAX_INSTANCES));
                 renderer.render_instances(0, passes).unwrap();
-                println!("{:?}", before.elapsed());
+                // println!("render took {:?}", before.elapsed());
             }
             _ => {}
         }

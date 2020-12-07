@@ -570,7 +570,7 @@ impl<B: hal::Backend> Renderer<B> {
                     &pipeline_layout,
                     Subpass { index: 0, main_pass: &render_pass },
                 );
-                // pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
+                pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
                 pipeline_desc.depth_stencil = pso::DepthStencilDesc {
                     depth: Some(pso::DepthTest { fun: pso::Comparison::LessEqual, write: true }),
                     depth_bounds: false,
