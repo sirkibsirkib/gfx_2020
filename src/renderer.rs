@@ -292,6 +292,7 @@ impl<B: hal::Backend> Renderer<B> {
         adapter: hal::adapter::Adapter<B>,
         max_tri_verts: u32,
         max_instances: u32,
+        cull_face: pso::Face,
     ) -> Self {
         let memory_types = adapter.physical_device.memory_properties().memory_types;
         let limits = adapter.physical_device.limits();
@@ -570,7 +571,7 @@ impl<B: hal::Backend> Renderer<B> {
                     &pipeline_layout,
                     Subpass { index: 0, main_pass: &render_pass },
                 );
-                pipeline_desc.rasterizer.cull_face = pso::Face::BACK;
+                pipeline_desc.rasterizer.cull_face = cull_face;
                 pipeline_desc.depth_stencil = pso::DepthStencilDesc {
                     depth: Some(pso::DepthTest { fun: pso::Comparison::LessEqual, write: true }),
                     depth_bounds: false,

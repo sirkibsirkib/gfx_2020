@@ -9,6 +9,7 @@ use {
     rand::{rngs::ThreadRng, Rng},
 };
 pub use {
+    gfx_hal::pso::Face as CullFace,
     glam::{Mat4, Quat, Vec3},
     renderer::{vert_coord_consts, DrawInfo, Renderer, TexScissor, VertCoord},
 };
@@ -40,13 +41,14 @@ fn archery() {
     let instance = back::Instance::create("gfx-rs quad", 1).unwrap();
     let surface = unsafe { instance.create_surface(&window).unwrap() };
     let adapter = instance.enumerate_adapters().into_iter().next().unwrap();
-    const MAX_TRI_VERTS: u32 = 6;
+    const MAX_TRI_VERTS: u32 = vert_coord_consts::UNIT_QUAD.len() as u32;
+    const MAX_INSTANCES: u32 = 1 + 2 * 3;
     const FLOOR_TS: TexScissor =
         TexScissor { top_left: [0. / 50., 0. / 6.], size: [1. / 50., 1. / 6.] };
     const ARROW_TS: TexScissor =
         TexScissor { top_left: [0. / 50., 1. / 6.], size: [50. / 50., 5. / 6.] };
     let mut renderer =
-        Renderer::new(instance, surface, adapter, vert_coord_consts::UNIT_QUAD.len() as u32, 2);
+        Renderer::new(instance, surface, adapter, MAX_TRI_VERTS, MAX_INSTANCES, CullFace::NONE);
 
     let img_rgba =
         image::io::Reader::open("./src/data/arrow.png").unwrap().decode().unwrap().to_rgba();
@@ -64,42 +66,47 @@ fn archery() {
         pos: Vec3,
         vel: Vec3,
     }
-    let one = Vec3::new(1., 0., 0.);
-    let arrow = Arrow { pos: Vec3::new(0.3, 2., 0.6), vel: Vec3::new(0.1, 0.2, 0.7) };
+    let mut arrows = [
+        Arrow { pos: Vec3::new(0.3, 2., 0.6), vel: Vec3::new(0.0001, 0.0002, -0.007) },
+        Arrow { pos: Vec3::new(1.3, 1., 0.8), vel: Vec3::new(0.0001, 0.0001, -0.009) },
+        Arrow { pos: Vec3::new(2.3, 2., -2.9), vel: Vec3::new(0.0001, -0.0001, -0.005) },
+    ];
     impl Arrow {
-        fn transform(&self) -> Mat4 {
-            const ONE: Vec3 = Vec3 { x: 1., y: 0., z: 0. };
-            let axis = ONE.cross(self.vel);
-            let angle = ONE.angle_between(self.vel);
-            Mat4::from_quat(Quat::from_axis_angle(axis, angle))
-                * Mat4::from_rotation_z(PI)
-                * Mat4::from_scale(Vec3::new(1., 0.1, 1.))
-                * Mat4::from_translation(self.pos)
+        fn transforms(&self) -> [Mat4; 2] {
+            let q = move |q| {
+                Mat4::from_translation(self.pos)
+                    * Mat4::from_quat({
+                        const ONE: Vec3 = Vec3 { x: 1., y: 0., z: 0. };
+                        let axis = ONE.cross(self.vel.normalize());
+                        let angle = ONE.angle_between(self.vel);
+                        Quat::from_axis_angle(axis, angle)
+                    })
+                    * Mat4::from_translation(Vec3::new(-0.3, 0., 0.))
+                    * Mat4::from_rotation_z(PI)
+                    * Mat4::from_rotation_x(q)
+                    * Mat4::from_scale(Vec3::new(1., 0.1, 1.))
+            };
+            [
+                q(PI * 0.0), //
+                q(PI * 0.5), //
+            ]
         }
     }
     let floor_m4 = Mat4::from_scale_rotation_translation(
-        Vec3::new(5., 5., 1.),
+        Vec3::new(9999., 9999., 1.),
         Quat::identity(),
         Vec3::new(0., 0., 1.),
     );
 
     renderer.write_vertex_buffer(0, vert_coord_consts::UNIT_QUAD.iter().copied());
-    renderer.write_vertex_buffer(0, [FLOOR_TS, ARROW_TS].iter().copied());
-    renderer.write_vertex_buffer(0, [floor_m4, arrow.transform()].iter().copied());
     renderer.write_vertex_buffer(
-        2,
-        [{
-            let axis = one.cross(arrow.vel);
-            let angle = one.angle_between(arrow.vel);
-            let rot = Quat::from_axis_angle(axis, angle);
-            Mat4::from_rotation_translation(rot, arrow.pos)
-        }]
-        .iter()
-        .copied(),
+        0,
+        std::iter::once(FLOOR_TS).chain((1..MAX_INSTANCES).map(|_| ARROW_TS)),
     );
+    renderer.write_vertex_buffer(0, Some(floor_m4));
     let mut eye = Vec3::default();
     let mut yp = Yp { pitch: PI / 2., yaw: 0. };
-    let persp = Mat4::perspective_lh(1., 1., 0.2, 7.);
+    let persp = Mat4::perspective_lh(1., 1., 0.5, 17.);
     event_loop.run(move |event, _, control_flow| {
         use winit::{
             event::{
@@ -117,9 +124,11 @@ fn archery() {
             E::WindowEvent { event: We::KeyboardInput { input, .. }, .. } => match input {
                 Ki { virtual_keycode: Some(Vkc::Escape), .. } => *control_flow = ControlFlow::Exit,
                 Ki { virtual_keycode: Some(Vkc::W), .. } => eye[0] += 0.1,
-                Ki { virtual_keycode: Some(Vkc::A), .. } => eye[1] += 0.1,
                 Ki { virtual_keycode: Some(Vkc::S), .. } => eye[0] -= 0.1,
+                Ki { virtual_keycode: Some(Vkc::A), .. } => eye[1] += 0.1,
                 Ki { virtual_keycode: Some(Vkc::D), .. } => eye[1] -= 0.1,
+                Ki { virtual_keycode: Some(Vkc::LControl), .. } => eye[2] += 0.1,
+                Ki { virtual_keycode: Some(Vkc::Space), .. } => eye[2] -= 0.1,
                 _ => {}
             },
             E::DeviceEvent { event: De::MouseMotion { delta: (x, y) }, .. } => {
@@ -132,9 +141,23 @@ fn archery() {
             E::RedrawEventsCleared => {}
             E::MainEventsCleared => {
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + WAIT_DUR);
+                for a in arrows.iter_mut() {
+                    a.vel[2] += 0.00001;
+                    a.pos += a.vel;
+                }
+                renderer.write_vertex_buffer(
+                    1,
+                    arrows.iter().flat_map(|a| {
+                        let [t0, t1] = a.transforms();
+                        Some(t0).into_iter().chain(Some(t1))
+                    }),
+                );
                 let view = persp * Mat4::from_quat(yp.quat()) * Mat4::from_translation(eye);
                 renderer
-                    .render_instances(0, Some(DrawInfo::new(&view, 0..MAX_TRI_VERTS, 0..2)))
+                    .render_instances(
+                        0,
+                        Some(DrawInfo::new(&view, 0..MAX_TRI_VERTS, 0..MAX_INSTANCES)),
+                    )
                     .unwrap();
                 window.request_redraw();
             }
@@ -161,7 +184,8 @@ fn rect_example() {
     const MAX_TRI_VERTS: u32 = 6;
     const MAX_INSTANCES: u32 = 1000;
     const DRAWS_PER_FRAME: usize = 3;
-    let mut renderer = Renderer::new(instance, surface, adapter, MAX_TRI_VERTS, MAX_INSTANCES);
+    let mut renderer =
+        Renderer::new(instance, surface, adapter, MAX_TRI_VERTS, MAX_INSTANCES, CullFace::BACK);
 
     let img_rgba =
         image::io::Reader::open("./src/data/logo.png").unwrap().decode().unwrap().to_rgba();
@@ -305,7 +329,8 @@ fn spinning_random_cubes() {
     let scale_dist = rand::distributions::Uniform::new(0.01, 0.06);
     let sprite_index = rand::distributions::Uniform::from(0..3);
 
-    let mut renderer = Renderer::new(instance, surface, adapter, max_tri_verts, MAX_INSTANCES);
+    let mut renderer =
+        Renderer::new(instance, surface, adapter, max_tri_verts, MAX_INSTANCES, CullFace::BACK);
     let img_rgba =
         image::io::Reader::open("./src/data/3d.png").unwrap().decode().unwrap().to_rgba();
     renderer.load_texture(&img_rgba);
@@ -440,7 +465,8 @@ fn fly_around() {
     let dist_trans = rand::distributions::Uniform::new(-170., 170.);
     let dist_scale = rand::distributions::Uniform::new(0.01, 4.1);
 
-    let mut renderer = Renderer::new(instance, surface, adapter, max_tri_verts, MAX_INSTANCES);
+    let mut renderer =
+        Renderer::new(instance, surface, adapter, max_tri_verts, MAX_INSTANCES, CullFace::BACK);
     let img_rgba =
         image::io::Reader::open("./src/data/3d.png").unwrap().decode().unwrap().to_rgba();
     renderer.load_texture(&img_rgba);
