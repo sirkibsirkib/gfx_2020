@@ -23,7 +23,125 @@ fn rand_quat<R: Rng>(rng: &mut R) -> Quat {
 const DIMS: hal::window::Extent2D = hal::window::Extent2D { width: 800, height: 800 };
 
 fn main() {
-    fly_around()
+    archery()
+}
+
+fn archery() {
+    let event_loop = winit::event_loop::EventLoop::new();
+    let wb = winit::window::WindowBuilder::new()
+        .with_resizable(false)
+        .with_min_inner_size(winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(64.0, 64.0)))
+        .with_inner_size(winit::dpi::Size::Physical(winit::dpi::PhysicalSize::new(
+            DIMS.width,
+            DIMS.height,
+        )))
+        .with_title("quad".to_string());
+    let window = wb.build(&event_loop).unwrap();
+    let instance = back::Instance::create("gfx-rs quad", 1).unwrap();
+    let surface = unsafe { instance.create_surface(&window).unwrap() };
+    let adapter = instance.enumerate_adapters().into_iter().next().unwrap();
+    const MAX_TRI_VERTS: u32 = 6;
+    const FLOOR_TS: TexScissor =
+        TexScissor { top_left: [0. / 50., 0. / 6.], size: [1. / 50., 1. / 6.] };
+    const ARROW_TS: TexScissor =
+        TexScissor { top_left: [0. / 50., 1. / 6.], size: [50. / 50., 5. / 6.] };
+    let mut renderer =
+        Renderer::new(instance, surface, adapter, vert_coord_consts::UNIT_QUAD.len() as u32, 2);
+
+    let img_rgba =
+        image::io::Reader::open("./src/data/arrow.png").unwrap().decode().unwrap().to_rgba();
+    renderer.load_texture(&img_rgba);
+    struct Yp {
+        yaw: f32,
+        pitch: f32,
+    }
+    impl Yp {
+        fn quat(&self) -> Quat {
+            Quat::from_rotation_x(self.pitch) * Quat::from_rotation_z(self.yaw)
+        }
+    }
+    struct Arrow {
+        pos: Vec3,
+        vel: Vec3,
+    }
+    let one = Vec3::new(1., 0., 0.);
+    let arrow = Arrow { pos: Vec3::new(0.3, 2., 0.6), vel: Vec3::new(0.1, 0.2, 0.7) };
+    impl Arrow {
+        fn transform(&self) -> Mat4 {
+            const ONE: Vec3 = Vec3 { x: 1., y: 0., z: 0. };
+            let axis = ONE.cross(self.vel);
+            let angle = ONE.angle_between(self.vel);
+            Mat4::from_quat(Quat::from_axis_angle(axis, angle))
+                * Mat4::from_rotation_z(PI)
+                * Mat4::from_scale(Vec3::new(1., 0.1, 1.))
+                * Mat4::from_translation(self.pos)
+        }
+    }
+    let floor_m4 = Mat4::from_scale_rotation_translation(
+        Vec3::new(5., 5., 1.),
+        Quat::identity(),
+        Vec3::new(0., 0., 1.),
+    );
+
+    renderer.write_vertex_buffer(0, vert_coord_consts::UNIT_QUAD.iter().copied());
+    renderer.write_vertex_buffer(0, [FLOOR_TS, ARROW_TS].iter().copied());
+    renderer.write_vertex_buffer(0, [floor_m4, arrow.transform()].iter().copied());
+    renderer.write_vertex_buffer(
+        2,
+        [{
+            let axis = one.cross(arrow.vel);
+            let angle = one.angle_between(arrow.vel);
+            let rot = Quat::from_axis_angle(axis, angle);
+            Mat4::from_rotation_translation(rot, arrow.pos)
+        }]
+        .iter()
+        .copied(),
+    );
+    let mut eye = Vec3::default();
+    let mut yp = Yp { pitch: PI / 2., yaw: 0. };
+    let persp = Mat4::perspective_lh(1., 1., 0.2, 7.);
+    event_loop.run(move |event, _, control_flow| {
+        use winit::{
+            event::{
+                DeviceEvent as De, Event as E, KeyboardInput as Ki, VirtualKeyCode as Vkc,
+                WindowEvent as We,
+            },
+            event_loop::ControlFlow,
+        };
+        const WAIT_DUR: Duration = Duration::from_millis(16);
+        match event {
+            E::NewEvents(winit::event::StartCause::Init) => {
+                *control_flow = ControlFlow::WaitUntil(Instant::now() + WAIT_DUR);
+            }
+            E::WindowEvent { event: We::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
+            E::WindowEvent { event: We::KeyboardInput { input, .. }, .. } => match input {
+                Ki { virtual_keycode: Some(Vkc::Escape), .. } => *control_flow = ControlFlow::Exit,
+                Ki { virtual_keycode: Some(Vkc::W), .. } => eye[0] += 0.1,
+                Ki { virtual_keycode: Some(Vkc::A), .. } => eye[1] += 0.1,
+                Ki { virtual_keycode: Some(Vkc::S), .. } => eye[0] -= 0.1,
+                Ki { virtual_keycode: Some(Vkc::D), .. } => eye[1] -= 0.1,
+                _ => {}
+            },
+            E::DeviceEvent { event: De::MouseMotion { delta: (x, y) }, .. } => {
+                const MULT: f32 = 0.002;
+                yp.yaw = (yp.yaw + x as f32 * MULT) % (PI * 2.);
+                yp.pitch = (yp.pitch + y as f32 * MULT).min(PI).max(0.);
+                let _ = window.set_cursor_position(winit::dpi::Position::Logical([400.; 2].into()));
+            }
+            E::WindowEvent { event: We::Resized(_), .. } => unreachable!(),
+            E::RedrawEventsCleared => {}
+            E::MainEventsCleared => {
+                *control_flow = ControlFlow::WaitUntil(Instant::now() + WAIT_DUR);
+                let view = persp * Mat4::from_quat(yp.quat()) * Mat4::from_translation(eye);
+                renderer
+                    .render_instances(0, Some(DrawInfo::new(&view, 0..MAX_TRI_VERTS, 0..2)))
+                    .unwrap();
+                window.request_redraw();
+            }
+            _ => {}
+        }
+        // println!("{:?}", &ent.keys);
+    })
 }
 
 fn rect_example() {
@@ -316,11 +434,11 @@ fn fly_around() {
             },
         );
     let max_tri_verts = vert_coord_iter.clone().count() as u32;
-    const MAX_INSTANCES: u32 = 30_000;
+    const MAX_INSTANCES: u32 = 20_000;
     let mut rng = rand::thread_rng();
     let dist_sprite_index = rand::distributions::Uniform::from(0..3);
-    let dist_trans = rand::distributions::Uniform::new(-20., 20.);
-    let dist_scale = rand::distributions::Uniform::new(0.01, 1.1);
+    let dist_trans = rand::distributions::Uniform::new(-170., 170.);
+    let dist_scale = rand::distributions::Uniform::new(0.01, 4.1);
 
     let mut renderer = Renderer::new(instance, surface, adapter, max_tri_verts, MAX_INSTANCES);
     let img_rgba =
@@ -387,7 +505,9 @@ fn fly_around() {
         roll: AntagKeys,
         pitch: AntagKeys,
         yaw: AntagKeys,
-        thrust: AntagKeys,
+        surge: AntagKeys,
+        sway: AntagKeys,
+        heave: AntagKeys,
     }
     let mut ent = Entity {
         rotation_state: Quat::identity(),
@@ -397,9 +517,11 @@ fn fly_around() {
         keys: Pressing::default(),
     };
     // renderer.render_instances(0, std::iter::empty()).unwrap();
-    let persp = Mat4::perspective_lh(1., 1., 0.5, 11.);
+    let persp = Mat4::perspective_lh(1., 1., 0.8, 70.);
     // let [mut updates, mut frames] = [0; 2];
     // let started_at = Instant::now();
+    let mut box_rot = PI;
+    let box_rot_delta = 0.0003;
     event_loop.run(move |event, _, control_flow| {
         use winit::{
             event::{Event as E, KeyboardInput as Ki, VirtualKeyCode as Vkc, WindowEvent as We},
@@ -417,7 +539,8 @@ fn fly_around() {
             }
         }
         const WAIT_DUR: Duration = Duration::from_millis(16);
-        // println!("{:?}", &event);
+        println!("{:?}", &event);
+        // *control_flow = ControlFlow::Poll;
         match event {
             E::NewEvents(winit::event::StartCause::Init) => {
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + WAIT_DUR);
@@ -429,50 +552,59 @@ fn fly_around() {
                     Ki { virtual_keycode: Some(Vkc::Escape), .. } => {
                         *control_flow = ControlFlow::Exit
                     }
-                    Ki { virtual_keycode: Some(Vkc::Space), state, .. } => {
+                    Ki { virtual_keycode: Some(Vkc::LControl), state, .. } => {
                         ent.keys.pitch.pos = state
                     }
-                    Ki { virtual_keycode: Some(Vkc::LControl), state, .. } => {
+                    Ki { virtual_keycode: Some(Vkc::Space), state, .. } => {
                         ent.keys.pitch.neg = state
                     }
                     Ki { virtual_keycode: Some(Vkc::Q), state, .. } => ent.keys.roll.neg = state,
                     Ki { virtual_keycode: Some(Vkc::E), state, .. } => ent.keys.roll.pos = state,
-                    Ki { virtual_keycode: Some(Vkc::D), state, .. } => ent.keys.yaw.pos = state,
-                    Ki { virtual_keycode: Some(Vkc::A), state, .. } => ent.keys.yaw.neg = state,
-                    Ki { virtual_keycode: Some(Vkc::W), state, .. } => ent.keys.thrust.pos = state,
-                    Ki { virtual_keycode: Some(Vkc::S), state, .. } => ent.keys.thrust.neg = state,
+                    Ki { virtual_keycode: Some(Vkc::A), state, .. } => ent.keys.yaw.pos = state,
+                    Ki { virtual_keycode: Some(Vkc::D), state, .. } => ent.keys.yaw.neg = state,
+                    Ki { virtual_keycode: Some(Vkc::W), state, .. } => ent.keys.surge.pos = state,
+                    Ki { virtual_keycode: Some(Vkc::S), state, .. } => ent.keys.surge.neg = state,
+                    Ki { virtual_keycode: Some(Vkc::Up), state, .. } => ent.keys.heave.pos = state,
+                    Ki { virtual_keycode: Some(Vkc::Down), state, .. } => {
+                        ent.keys.heave.neg = state
+                    }
+                    Ki { virtual_keycode: Some(Vkc::Left), state, .. } => ent.keys.sway.pos = state,
+                    Ki { virtual_keycode: Some(Vkc::Right), state, .. } => {
+                        ent.keys.sway.neg = state
+                    }
                     _ => {}
                 }
             }
             E::WindowEvent { event: We::Resized(_), .. } => unreachable!(),
             E::RedrawEventsCleared => {}
-            E::NewEvents(winit::event::StartCause::ResumeTimeReached { .. }) => {
+            E::MainEventsCleared => {
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + WAIT_DUR);
                 // updates += 1;
                 // if updates % 16 == 0 {
                 //     println!("UPS = {:?}", updates as f32 / started_at.elapsed().as_secs_f32());
                 // }
                 // println!("MAIN {:?}", &event);
-                const ROT_CONST: f32 = 0.01;
-                const DAMP_MULT: f32 = 0.97;
-                const VEL_CONST: f32 = 0.005;
+                const ROT_CONST: f32 = 0.003;
+                const DAMP_MULT: f32 = 0.98;
+                const VEL_CONST: f32 = 0.003;
+                fn pos_f32(pos: bool) -> f32 {
+                    if pos {
+                        1.
+                    } else {
+                        -1.
+                    }
+                }
 
                 let rotation_delta_delta = {
                     let mut q = Quat::identity();
-                    match ent.keys.pitch.net_pos() {
-                        Some(true) => q *= Quat::from_rotation_y(-ROT_CONST),
-                        Some(false) => q *= Quat::from_rotation_y(ROT_CONST),
-                        None => {}
+                    if let Some(pos) = ent.keys.roll.net_pos() {
+                        q *= Quat::from_rotation_x(pos_f32(pos) * ROT_CONST);
                     }
-                    match ent.keys.yaw.net_pos() {
-                        Some(true) => q *= Quat::from_rotation_z(-ROT_CONST),
-                        Some(false) => q *= Quat::from_rotation_z(ROT_CONST),
-                        None => {}
+                    if let Some(pos) = ent.keys.pitch.net_pos() {
+                        q *= Quat::from_rotation_y(pos_f32(pos) * ROT_CONST);
                     }
-                    match ent.keys.roll.net_pos() {
-                        Some(true) => q *= Quat::from_rotation_x(ROT_CONST),
-                        Some(false) => q *= Quat::from_rotation_x(-ROT_CONST),
-                        None => {}
+                    if let Some(pos) = ent.keys.yaw.net_pos() {
+                        q *= Quat::from_rotation_z(pos_f32(pos) * ROT_CONST);
                     }
                     q
                 };
@@ -480,14 +612,17 @@ fn fly_around() {
                     Quat::identity().lerp(ent.rotation_delta * rotation_delta_delta, DAMP_MULT);
                 ent.rotation_state *= ent.rotation_delta;
 
-                match ent.keys.thrust.net_pos() {
-                    Some(true) => {
-                        ent.velocity += ent.rotation_state.mul_vec3(Vec3::new(VEL_CONST, 0., 0.))
-                    }
-                    Some(false) => {
-                        ent.velocity -= ent.rotation_state.mul_vec3(Vec3::new(VEL_CONST, 0., 0.))
-                    }
-                    None => {}
+                if let Some(pos) = ent.keys.surge.net_pos() {
+                    ent.velocity +=
+                        pos_f32(pos) * ent.rotation_state.mul_vec3(Vec3::new(VEL_CONST, 0., 0.));
+                };
+                if let Some(pos) = ent.keys.heave.net_pos() {
+                    ent.velocity +=
+                        pos_f32(pos) * ent.rotation_state.mul_vec3(Vec3::new(0., 0., VEL_CONST));
+                };
+                if let Some(pos) = ent.keys.sway.net_pos() {
+                    ent.velocity +=
+                        pos_f32(pos) * ent.rotation_state.mul_vec3(Vec3::new(0., VEL_CONST, 0.));
                 };
                 ent.velocity *= DAMP_MULT;
                 ent.position += ent.velocity;
@@ -499,20 +634,34 @@ fn fly_around() {
                 //     println!("FPS = {:?}", frames as f32 / started_at.elapsed().as_secs_f32());
                 // }
                 // let before = Instant::now();
-                let views = [{
-                    let look_at = {
-                        let eye = ent.position;
-                        let center = eye + ent.rotation_state.mul_vec3(Vec3::new(1., 0., 0.));
-                        let up = ent.rotation_state.mul_vec3(Vec3::new(0., 0., -1.));
-                        Mat4::look_at_lh(eye, center, up)
-                    };
-                    persp * look_at
-                }];
-                let passes = views
-                    .iter()
-                    .map(|view| DrawInfo::new(view, 0..max_tri_verts, 0..MAX_INSTANCES));
+                let look_at = {
+                    let eye = ent.position;
+                    let center = eye + ent.rotation_state.mul_vec3(Vec3::new(1., 0., 0.));
+                    let up = ent.rotation_state.mul_vec3(Vec3::new(0., 0., -1.));
+                    Mat4::look_at_lh(eye, center, up)
+                };
+                box_rot += box_rot_delta;
+                let views = [
+                    {
+                        let look_at = {
+                            let eye = ent.position;
+                            let center = eye + ent.rotation_state.mul_vec3(Vec3::new(1., 0., 0.));
+                            let up = ent.rotation_state.mul_vec3(Vec3::new(0., 0., -1.));
+                            Mat4::look_at_lh(eye, center, up)
+                        };
+                        persp * look_at
+                    },
+                    { persp * look_at * { Mat4::from_rotation_z(2. * box_rot) } },
+                    { persp * look_at * { Mat4::from_rotation_x(PI - box_rot) } },
+                ];
+                let instance_ranges =
+                    [0..MAX_INSTANCES, (MAX_INSTANCES / 2)..MAX_INSTANCES, 0..(MAX_INSTANCES / 2)];
+                let passes = views.iter().zip(instance_ranges.iter().cloned()).map(
+                    |(view, instance_range)| DrawInfo::new(view, 0..max_tri_verts, instance_range),
+                );
                 renderer.render_instances(0, passes).unwrap();
                 // println!("render took {:?}", before.elapsed());
+                window.request_redraw();
             }
             _ => {}
         }
