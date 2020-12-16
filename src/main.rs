@@ -51,7 +51,7 @@ fn archery() {
         Renderer::new(instance, surface, adapter, MAX_TRI_VERTS, MAX_INSTANCES, CullFace::NONE);
 
     let img_rgba =
-        image::io::Reader::open("./src/data/arrow.png").unwrap().decode().unwrap().to_rgba();
+        image::io::Reader::open("./src/data/arrow.png").unwrap().decode().unwrap().to_rgba8();
     renderer.load_texture(&img_rgba);
     struct Yp {
         yaw: f32,
@@ -188,7 +188,7 @@ fn rect_example() {
         Renderer::new(instance, surface, adapter, MAX_TRI_VERTS, MAX_INSTANCES, CullFace::BACK);
 
     let img_rgba =
-        image::io::Reader::open("./src/data/logo.png").unwrap().decode().unwrap().to_rgba();
+        image::io::Reader::open("./src/data/logo.png").unwrap().decode().unwrap().to_rgba8();
     renderer.load_texture(&img_rgba);
 
     let mut rng = rand::thread_rng();
@@ -332,7 +332,7 @@ fn spinning_random_cubes() {
     let mut renderer =
         Renderer::new(instance, surface, adapter, max_tri_verts, MAX_INSTANCES, CullFace::BACK);
     let img_rgba =
-        image::io::Reader::open("./src/data/3d.png").unwrap().decode().unwrap().to_rgba();
+        image::io::Reader::open("./src/data/3d.png").unwrap().decode().unwrap().to_rgba8();
     renderer.load_texture(&img_rgba);
     renderer.write_vertex_buffer(0, vert_coord_iter);
     renderer.write_vertex_buffer(
@@ -468,7 +468,7 @@ fn fly_around() {
     let mut renderer =
         Renderer::new(instance, surface, adapter, max_tri_verts, MAX_INSTANCES, CullFace::BACK);
     let img_rgba =
-        image::io::Reader::open("./src/data/3d.png").unwrap().decode().unwrap().to_rgba();
+        image::io::Reader::open("./src/data/3d.png").unwrap().decode().unwrap().to_rgba8();
     renderer.load_texture(&img_rgba);
     renderer.write_vertex_buffer(0, vert_coord_iter);
     renderer.write_vertex_buffer(
