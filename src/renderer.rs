@@ -386,7 +386,7 @@ impl<B: hal::Backend> Renderer<B> {
         });
 
         let caps = surface.capabilities(&adapter.physical_device);
-        let swap_config = hal::window::SwapchainConfig::from_caps(&caps, format, DIMS);
+        let mut swap_config = hal::window::SwapchainConfig::from_caps(&caps, format, DIMS);
         let frames_in_flight = {
             use hal::window::PresentMode as Pm;
             match swap_config.present_mode {
@@ -395,6 +395,8 @@ impl<B: hal::Backend> Renderer<B> {
                 Pm::IMMEDIATE | Pm::RELAXED | _ => todo!(),
             }
         };
+        swap_config.present_mode = hal::window::PresentMode::FIFO;
+        swap_config.image_count = 2;
         let extent = swap_config.extent;
         unsafe {
             surface.configure_swapchain(&device, swap_config).expect("Can't configure swapchain");
@@ -871,14 +873,7 @@ impl<B: hal::Backend> Renderer<B> {
         let tex_image_bundle: &ImageBundle<B> =
             inner.tex_arena.get(texture_index).ok_or(RenderErr::UnknownTextureIndex)?;
         let per_fif = inner.per_fif.get_mut(inner.next_fif_index).expect("next FIF out of range");
-        let surface_image =
-            if let Ok((surface_image, _)) = unsafe { inner.surface.acquire_image(1000) } {
-                surface_image
-            } else {
-                // println!("FAILURE");
-                return Ok(());
-            };
-        // println!("SUCCEE");
+        let surface_image = unsafe { inner.surface.acquire_image(!0) }.unwrap().0;
         unsafe {
             self.device.wait_for_fence(&per_fif.fence, !0).expect("Failed to wait for fence");
             self.device.reset_fence(&per_fif.fence).expect("Failed to reset fence");

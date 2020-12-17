@@ -66,10 +66,11 @@ fn archery() {
         pos: Vec3,
         vel: Vec3,
     }
+    // POS Z is DOWN
     let mut arrows = [
-        Arrow { pos: Vec3::new(0.3, 2., 0.6), vel: Vec3::new(0.0001, 0.0002, -0.007) },
-        Arrow { pos: Vec3::new(1.3, 1., 0.8), vel: Vec3::new(0.0001, 0.0001, -0.009) },
-        Arrow { pos: Vec3::new(2.3, 2., -2.9), vel: Vec3::new(0.0001, -0.0001, -0.005) },
+        Arrow { pos: Vec3::new(0.3, 2., -0.6), vel: Vec3::new(0.001, 0.0008, -0.007) },
+        Arrow { pos: Vec3::new(1.3, 1., -0.8), vel: Vec3::new(0.0005, 0.001, -0.009) },
+        Arrow { pos: Vec3::new(2.3, 2., -2.9), vel: Vec3::new(-0.0001, -0.0018, -0.005) },
     ];
     impl Arrow {
         fn transforms(&self) -> [Mat4; 2] {
@@ -95,7 +96,7 @@ fn archery() {
     let floor_m4 = Mat4::from_scale_rotation_translation(
         Vec3::new(9999., 9999., 1.),
         Quat::identity(),
-        Vec3::new(0., 0., 1.),
+        Vec3::default(),
     );
 
     renderer.write_vertex_buffer(0, vert_coord_consts::UNIT_QUAD.iter().copied());
@@ -104,9 +105,16 @@ fn archery() {
         std::iter::once(FLOOR_TS).chain((1..MAX_INSTANCES).map(|_| ARROW_TS)),
     );
     renderer.write_vertex_buffer(0, Some(floor_m4));
-    let mut eye = Vec3::default();
+    let mut eye = Vec3::new(0., 0., -2.);
     let mut yp = Yp { pitch: PI / 2., yaw: 0. };
     let persp = Mat4::perspective_lh(1., 1., 0.5, 17.);
+    let mut next_update_after = Instant::now();
+    let start_program_at = Instant::now();
+    let [mut updates, mut redraws] = [0; 2];
+    const UPS: u64 = 60;
+    const UPDATE_DELTA: Duration = Duration::from_micros(1_000_000 / UPS);
+    let shadow_squish =
+        Mat4::from_translation(Vec3::new(0., 0., -0.001)) * Mat4::from_scale(Vec3::new(1., 1., 0.));
     event_loop.run(move |event, _, control_flow| {
         use winit::{
             event::{
@@ -115,11 +123,12 @@ fn archery() {
             },
             event_loop::ControlFlow,
         };
-        const WAIT_DUR: Duration = Duration::from_millis(16);
+        // const WAIT_DUR: Duration = Duration::from_millis(16);
+        *control_flow = ControlFlow::Poll;
         match event {
-            E::NewEvents(winit::event::StartCause::Init) => {
-                *control_flow = ControlFlow::WaitUntil(Instant::now() + WAIT_DUR);
-            }
+            // E::NewEvents(winit::event::StartCause::Init) => {
+            //     *control_flow = ControlFlow::WaitUntil(Instant::now() + WAIT_DUR);
+            // }
             E::WindowEvent { event: We::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
             E::WindowEvent { event: We::KeyboardInput { input, .. }, .. } => match input {
                 Ki { virtual_keycode: Some(Vkc::Escape), .. } => *control_flow = ControlFlow::Exit,
@@ -138,28 +147,48 @@ fn archery() {
                 let _ = window.set_cursor_position(winit::dpi::Position::Logical([400.; 2].into()));
             }
             E::WindowEvent { event: We::Resized(_), .. } => unreachable!(),
-            E::RedrawEventsCleared => {}
             E::MainEventsCleared => {
-                *control_flow = ControlFlow::WaitUntil(Instant::now() + WAIT_DUR);
-                for a in arrows.iter_mut() {
-                    a.vel[2] += 0.00001;
-                    a.pos += a.vel;
+                let mut do_update = || {
+                    for a in arrows.iter_mut() {
+                        if a.pos[2] <= 0. {
+                            a.vel[2] += 0.00001;
+                            a.pos += a.vel;
+                        }
+                    }
+                    renderer.write_vertex_buffer(
+                        1,
+                        arrows.iter().flat_map(|a| {
+                            let [t0, t1] = a.transforms();
+                            Some(t0).into_iter().chain(Some(t1))
+                        }),
+                    );
+                    updates += 1;
+                };
+                let now = Instant::now();
+                while next_update_after < now {
+                    next_update_after += UPDATE_DELTA;
+                    do_update();
                 }
-                renderer.write_vertex_buffer(
-                    1,
-                    arrows.iter().flat_map(|a| {
-                        let [t0, t1] = a.transforms();
-                        Some(t0).into_iter().chain(Some(t1))
-                    }),
-                );
-                let view = persp * Mat4::from_quat(yp.quat()) * Mat4::from_translation(eye);
+                let secs_elapsed = start_program_at.elapsed().as_secs_f32();
+                println!("{:?}", [updates as f32 / secs_elapsed, redraws as f32 / secs_elapsed]);
+                window.request_redraw();
+            }
+            E::RedrawEventsCleared => {
+                let m = Mat4::from_quat(yp.quat()) * Mat4::from_translation(eye);
+                let view = persp * m;
+                let view_squashed = view * shadow_squish;
                 renderer
                     .render_instances(
                         0,
-                        Some(DrawInfo::new(&view, 0..MAX_TRI_VERTS, 0..MAX_INSTANCES)),
+                        [
+                            DrawInfo::new(&view_squashed, 0..MAX_TRI_VERTS, 1..MAX_INSTANCES),
+                            DrawInfo::new(&view, 0..MAX_TRI_VERTS, 0..MAX_INSTANCES),
+                        ]
+                        .iter()
+                        .cloned(),
                     )
                     .unwrap();
-                window.request_redraw();
+                redraws += 1;
             }
             _ => {}
         }
