@@ -42,7 +42,8 @@ fn archery() {
     let surface = unsafe { instance.create_surface(&window).unwrap() };
     let adapter = instance.enumerate_adapters().into_iter().next().unwrap();
     const MAX_TRI_VERTS: u32 = vert_coord_consts::UNIT_QUAD.len() as u32;
-    const MAX_INSTANCES: u32 = 1 + 2 * 3;
+    const MAX_ARROWS: u32 = 100;
+    const MAX_INSTANCES: u32 = 1 + 2 * MAX_ARROWS;
     const FLOOR_TS: TexScissor =
         TexScissor { top_left: [0. / 50., 0. / 6.], size: [1. / 50., 1. / 6.] };
     const ARROW_TS: TexScissor =
@@ -59,25 +60,28 @@ fn archery() {
     }
     impl Yp {
         fn quat(&self) -> Quat {
-            Quat::from_rotation_x(self.pitch) * Quat::from_rotation_z(self.yaw)
+            Quat::from_rotation_ypr(self.yaw, self.pitch, 0.)
         }
     }
     struct Arrow {
         pos: Vec3,
         vel: Vec3,
     }
+    let mut arrows: Vec<Arrow> = Vec::with_capacity(MAX_ARROWS as usize);
+
     // POS Z is DOWN
-    let mut arrows = [
-        Arrow { pos: Vec3::new(0.3, 2., -0.6), vel: Vec3::new(0.001, 0.0008, -0.007) },
-        Arrow { pos: Vec3::new(1.3, 1., -0.8), vel: Vec3::new(0.0005, 0.001, -0.009) },
-        Arrow { pos: Vec3::new(2.3, 2., -2.9), vel: Vec3::new(-0.0001, -0.0018, -0.005) },
-    ];
+    // let mut arrows = [
+    //     Arrow { pos: Vec3::new(0.3, 2., -0.6), vel: Vec3::new(0.001, 0.0008, -0.007) },
+    //     Arrow { pos: Vec3::new(1.3, 1., -0.8), vel: Vec3::new(0.0005, 0.001, -0.009) },
+    //     Arrow { pos: Vec3::new(2.3, 2., -2.9), vel: Vec3::new(-0.0001, -0.0018, -0.005) },
+    // ];
+    const ONE: Vec3 = Vec3 { x: 1., y: 0., z: 0. };
+    const UP: Vec3 = Vec3 { x: 0., y: 0., z: 1. };
     impl Arrow {
         fn transforms(&self) -> [Mat4; 2] {
             let q = move |q| {
                 Mat4::from_translation(self.pos)
                     * Mat4::from_quat({
-                        const ONE: Vec3 = Vec3 { x: 1., y: 0., z: 0. };
                         let axis = ONE.cross(self.vel.normalize());
                         let angle = ONE.angle_between(self.vel);
                         Quat::from_axis_angle(axis, angle)
@@ -114,7 +118,7 @@ fn archery() {
     const UPS: u64 = 60;
     const UPDATE_DELTA: Duration = Duration::from_micros(1_000_000 / UPS);
     let shadow_squish =
-        Mat4::from_translation(Vec3::new(0., 0., -0.001)) * Mat4::from_scale(Vec3::new(1., 1., 0.));
+        Mat4::from_translation(Vec3::new(0., 0., -0.01)) * Mat4::from_scale(Vec3::new(1., 1., 0.));
     event_loop.run(move |event, _, control_flow| {
         use winit::{
             event::{
@@ -123,12 +127,8 @@ fn archery() {
             },
             event_loop::ControlFlow,
         };
-        // const WAIT_DUR: Duration = Duration::from_millis(16);
         *control_flow = ControlFlow::Poll;
         match event {
-            // E::NewEvents(winit::event::StartCause::Init) => {
-            //     *control_flow = ControlFlow::WaitUntil(Instant::now() + WAIT_DUR);
-            // }
             E::WindowEvent { event: We::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
             E::WindowEvent { event: We::KeyboardInput { input, .. }, .. } => match input {
                 Ki { virtual_keycode: Some(Vkc::Escape), .. } => *control_flow = ControlFlow::Exit,
@@ -138,12 +138,22 @@ fn archery() {
                 Ki { virtual_keycode: Some(Vkc::D), .. } => eye[1] -= 0.1,
                 Ki { virtual_keycode: Some(Vkc::LControl), .. } => eye[2] += 0.1,
                 Ki { virtual_keycode: Some(Vkc::Space), .. } => eye[2] -= 0.1,
+                Ki { virtual_keycode: Some(Vkc::X), state, .. } => {
+                    if let winit::event::ElementState::Pressed = state {
+                        // add arrows
+                        let new_arrow = Arrow { pos: eye, vel: yp.quat() * (ONE * 0.03) };
+                        arrows.push(new_arrow);
+                        if arrows.len() > MAX_ARROWS as usize {
+                            arrows.remove(0);
+                        }
+                    }
+                }
                 _ => {}
             },
             E::DeviceEvent { event: De::MouseMotion { delta: (x, y) }, .. } => {
                 const MULT: f32 = 0.002;
                 yp.yaw = (yp.yaw + x as f32 * MULT) % (PI * 2.);
-                yp.pitch = (yp.pitch + y as f32 * MULT).min(PI).max(0.);
+                yp.pitch = (yp.pitch + y as f32 * MULT).min(PI / 2.).max(-PI / 2.);
                 let _ = window.set_cursor_position(winit::dpi::Position::Logical([400.; 2].into()));
             }
             E::WindowEvent { event: We::Resized(_), .. } => unreachable!(),
@@ -151,7 +161,7 @@ fn archery() {
                 let mut do_update = || {
                     for a in arrows.iter_mut() {
                         if a.pos[2] <= 0. {
-                            a.vel[2] += 0.00001;
+                            a.vel[2] += 0.0001;
                             a.pos += a.vel;
                         }
                     }
@@ -174,7 +184,8 @@ fn archery() {
                 window.request_redraw();
             }
             E::RedrawEventsCleared => {
-                let m = Mat4::from_quat(yp.quat()) * Mat4::from_translation(eye);
+                let m = Mat4::look_at_lh(eye, eye + yp.quat() * ONE, UP);
+                // let m = Mat4::from_quat(-yp.quat()) * Mat4::from_translation(-eye);
                 let view = persp * m;
                 let view_squashed = view * shadow_squish;
                 renderer

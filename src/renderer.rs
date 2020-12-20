@@ -52,6 +52,7 @@ impl<B: hal::Backend> HasVertexBufferFor<B, TexScissor> for Renderer<B> {
 #[derive(Debug, Clone)]
 pub struct DrawInfo<'a> {
     pub view_transform: &'a Mat4,
+    // pub color_mult: Vec4,
     pub vertex_range: Range<u32>,
     pub instance_range: Range<u32>,
 }
