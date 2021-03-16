@@ -6,6 +6,7 @@ layout(push_constant) uniform PushConstants {
     vec4 trans_1;
     vec4 trans_2;
     vec4 trans_3;
+    // vec4 color_mult_vertin;
 } pc;
 
 // vertex input
@@ -24,11 +25,14 @@ layout(location = 7) in vec2 tex_scissor_size;
 
 // vertex output
 layout(location = 0) out vec2 v_uv;
+// layout(location = 1) out vec4 color_mult_fragin;
 out gl_PerVertex {
     vec4 gl_Position;
 };
 
+
 void main() {
+    // color_mult_fragin = pc.color_mult_vertin;
     v_uv = tex_scissor_top_left + (tex_coord * tex_scissor_size);
     vec4 coord = vec4(model_coord, 1.0);
     mat4 inst = mat4(inst_0, inst_1, inst_2 ,inst_3);
