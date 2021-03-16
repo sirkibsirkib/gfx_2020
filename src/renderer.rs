@@ -1,3 +1,4 @@
+// # Imports and Constants
 use {
     super::*,
     crate::simple_arena::SimpleArena,
@@ -19,35 +20,19 @@ use {
         ops::Range,
     },
 };
+pub mod vert_coord_consts {
+    use super::VertCoord;
+    const N: f32 = -0.5; // consider changing s.t. up is +y for later (more standard)
+    const P: f32 = 0.5;
+    const TL: VertCoord = VertCoord { model_coord: [N, N, 0.], tex_coord: [0., 0.] };
+    const TR: VertCoord = VertCoord { model_coord: [P, N, 0.], tex_coord: [1., 0.] };
+    const BR: VertCoord = VertCoord { model_coord: [P, P, 0.], tex_coord: [1., 1.] };
+    const BL: VertCoord = VertCoord { model_coord: [N, P, 0.], tex_coord: [0., 1.] };
+    pub const UNIT_QUAD: [VertCoord; 6] = [BR, TR, TL, TL, BL, BR];
+}
 
-pub trait HasVertexBufferFor<B: hal::Backend, T: Copy> {
-    fn get_vertex_buffer_cap(&self) -> u32;
-    fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<T, B>;
-}
-impl<B: hal::Backend> HasVertexBufferFor<B, VertCoord> for Renderer<B> {
-    fn get_vertex_buffer_cap(&self) -> u32 {
-        self.max_tri_verts
-    }
-    fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<VertCoord, B> {
-        &self.inner.vertex_buffer_bundles.vc
-    }
-}
-impl<B: hal::Backend> HasVertexBufferFor<B, Mat4> for Renderer<B> {
-    fn get_vertex_buffer_cap(&self) -> u32 {
-        self.max_instances
-    }
-    fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<Mat4, B> {
-        &self.inner.vertex_buffer_bundles.m4
-    }
-}
-impl<B: hal::Backend> HasVertexBufferFor<B, TexScissor> for Renderer<B> {
-    fn get_vertex_buffer_cap(&self) -> u32 {
-        self.max_instances
-    }
-    fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<TexScissor, B> {
-        &self.inner.vertex_buffer_bundles.ts
-    }
-}
+////////////////////////////////////////////////////////
+// # Type definitions
 
 #[derive(Debug, Clone)]
 pub struct DrawInfo<'a> {
@@ -55,32 +40,11 @@ pub struct DrawInfo<'a> {
     pub vertex_range: Range<u32>,
     pub instance_range: Range<u32>,
 }
-impl<'a> DrawInfo<'a> {
-    pub fn new(
-        view_transform: &'a Mat4,
-        vertex_range: Range<u32>,
-        instance_range: Range<u32>,
-    ) -> Self {
-        Self { view_transform, vertex_range, instance_range }
-    }
-}
 
 #[derive(Debug, Copy, Clone)]
 pub enum RenderErr {
     UnknownTextureIndex,
 }
-
-trait AsU32Slice {
-    fn as_u32_slice(&self) -> &[u32];
-}
-impl AsU32Slice for Mat4 {
-    #[inline]
-    fn as_u32_slice(&self) -> &[u32] {
-        let f32_slice: &[f32] = self.as_ref();
-        unsafe { mem::transmute(f32_slice) }
-    }
-}
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VertCoord {
@@ -93,45 +57,6 @@ pub struct VertCoord {
 pub struct TexScissor {
     pub top_left: [f32; 2],
     pub size: [f32; 2],
-}
-impl core::ops::Mul<Self> for TexScissor {
-    type Output = Self;
-    fn mul(self, rhs: Self) -> Self {
-        use glam::Vec2;
-        let size = *(Vec2::from(self.size) * Vec2::from(rhs.size)).as_ref();
-        Self { top_left: self * rhs.top_left, size }
-    }
-}
-impl core::ops::Mul<[f32; 2]> for TexScissor {
-    type Output = [f32; 2];
-    fn mul(self, rhs: [f32; 2]) -> [f32; 2] {
-        use glam::Vec2;
-        let tl = Vec2::from(self.top_left);
-        let sz = Vec2::from(self.size);
-        let pt = Vec2::from(rhs);
-        *(tl + sz * pt).as_ref()
-    }
-}
-
-impl Default for TexScissor {
-    fn default() -> Self {
-        Self { top_left: [0.; 2], size: [1.; 2] }
-    }
-}
-
-pub mod vert_coord_consts {
-    use super::VertCoord;
-    const N: f32 = -0.5; // consider changing s.t. up is +y for later (more standard)
-    const P: f32 = 0.5;
-    const TL: VertCoord = VertCoord { model_coord: [N, N, 0.], tex_coord: [0., 0.] };
-    const TR: VertCoord = VertCoord { model_coord: [P, N, 0.], tex_coord: [1., 0.] };
-    const BR: VertCoord = VertCoord { model_coord: [P, P, 0.], tex_coord: [1., 1.] };
-    const BL: VertCoord = VertCoord { model_coord: [N, P, 0.], tex_coord: [0., 1.] };
-    pub const UNIT_QUAD: [VertCoord; 6] = [BR, TR, TL, TL, BL, BR];
-}
-
-trait DeviceDestroy<T> {
-    unsafe fn device_destroy(&mut self, t: T);
 }
 
 #[derive(Debug)]
@@ -176,7 +101,6 @@ pub struct Renderer<B: hal::Backend> {
     max_instances: u32,
     max_tri_verts: u32,
 }
-
 /// Things that must be manually dropped, because they correspond to Gfx resources
 #[derive(debug_stub_derive::DebugStub)]
 struct RendererInner<B: hal::Backend> {
@@ -196,21 +120,116 @@ struct RendererInner<B: hal::Backend> {
     next_fif_index: usize,
 }
 
-//////////////////////////////////////////////////////
+////////////////////////////////////////////////////////
+// # Trait definitions
 
-const fn padded_len(n: usize, non_coherent_atom_size: usize) -> usize {
-    ((n + non_coherent_atom_size - 1) / non_coherent_atom_size) * non_coherent_atom_size
+pub trait HasVertexBufferFor<B: hal::Backend, T: Copy> {
+    fn get_vertex_buffer_cap(&self) -> u32;
+    fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<T, B>;
+}
+trait AsU32Slice {
+    fn as_u32_slice(&self) -> &[u32];
+}
+trait DeviceDestroy<T> {
+    unsafe fn device_destroy(&mut self, t: T);
 }
 
-fn mem_type_for_buffer(
-    memory_types: &Vec<hal::adapter::MemoryType>,
-    buffer_req: &m::Requirements,
-    properties: m::Properties,
-) -> Option<hal::MemoryTypeId> {
-    let t = memory_types.iter().enumerate().position(|(id, mem_type)| {
-        buffer_req.type_mask & (1 << id) != 0 && mem_type.properties.contains(properties)
-    })?;
-    Some(t.into())
+////////////////////////////////////////////////////////
+// # Trait implmentations
+
+impl<B: hal::Backend> HasVertexBufferFor<B, VertCoord> for Renderer<B> {
+    fn get_vertex_buffer_cap(&self) -> u32 {
+        self.max_tri_verts
+    }
+    fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<VertCoord, B> {
+        &self.inner.vertex_buffer_bundles.vc
+    }
+}
+impl<B: hal::Backend> HasVertexBufferFor<B, Mat4> for Renderer<B> {
+    fn get_vertex_buffer_cap(&self) -> u32 {
+        self.max_instances
+    }
+    fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<Mat4, B> {
+        &self.inner.vertex_buffer_bundles.m4
+    }
+}
+impl<B: hal::Backend> HasVertexBufferFor<B, TexScissor> for Renderer<B> {
+    fn get_vertex_buffer_cap(&self) -> u32 {
+        self.max_instances
+    }
+    fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<TexScissor, B> {
+        &self.inner.vertex_buffer_bundles.ts
+    }
+}
+impl AsU32Slice for Mat4 {
+    #[inline]
+    fn as_u32_slice(&self) -> &[u32] {
+        let f32_slice: &[f32] = self.as_ref();
+        unsafe { mem::transmute(f32_slice) }
+    }
+}
+impl core::ops::Mul<Self> for TexScissor {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        use glam::Vec2;
+        let size = *(Vec2::from(self.size) * Vec2::from(rhs.size)).as_ref();
+        Self { top_left: self * rhs.top_left, size }
+    }
+}
+impl core::ops::Mul<[f32; 2]> for TexScissor {
+    type Output = [f32; 2];
+    fn mul(self, rhs: [f32; 2]) -> [f32; 2] {
+        use glam::Vec2;
+        let tl = Vec2::from(self.top_left);
+        let sz = Vec2::from(self.size);
+        let pt = Vec2::from(rhs);
+        *(tl + sz * pt).as_ref()
+    }
+}
+impl Default for TexScissor {
+    fn default() -> Self {
+        Self { top_left: [0.; 2], size: [1.; 2] }
+    }
+}
+impl<B: hal::Backend> Drop for Renderer<B> {
+    fn drop(&mut self) {
+        self.device.wait_idle().unwrap();
+        unsafe {
+            let mut inner = ManuallyDrop::take(&mut self.inner);
+            self.device.destroy_descriptor_pool(inner.desc_pool);
+            self.device.destroy_descriptor_set_layout(inner.set_layout);
+            self.device.device_destroy(inner.vertex_buffer_bundles);
+            for tex_image_bundle in inner.tex_arena.into_iter() {
+                self.device.device_destroy(tex_image_bundle);
+            }
+            self.device.destroy_sampler(inner.sampler);
+            for PerFif { semaphore, fence, cmd_buffer, depth_image_bundle } in inner.per_fif {
+                self.device.destroy_semaphore(semaphore);
+                self.device.destroy_fence(fence);
+                self.inner.cmd_pool.free(iter::once(cmd_buffer));
+                self.device.device_destroy(depth_image_bundle);
+            }
+            self.device.destroy_command_pool(inner.cmd_pool);
+            self.device.destroy_render_pass(inner.render_pass);
+            inner.surface.unconfigure_swapchain(&self.device);
+            self.device.destroy_graphics_pipeline(inner.pipeline);
+            self.device.destroy_pipeline_layout(inner.pipeline_layout);
+            inner.instance.destroy_surface(inner.surface);
+        }
+    }
+}
+
+////////////////////////////////////////////////////////
+// # Functions and methods
+
+impl<'a> DrawInfo<'a> {
+    pub fn new(
+        view_transform: &'a Mat4,
+        vertex_range: Range<u32>,
+        instance_range: Range<u32>,
+    ) -> Self {
+        Self { view_transform, vertex_range, instance_range }
+    }
 }
 
 impl<B: hal::Backend> DeviceDestroy<ImageBundle<B>> for B::Device {
@@ -236,6 +255,23 @@ impl<T, B: hal::Backend> DeviceDestroy<VertexBufferBundle<T, B>> for B::Device {
         self.destroy_buffer(buffer);
         self.free_memory(memory);
     }
+}
+
+//////////////////////////////////////////////////////
+
+const fn padded_len(n: usize, non_coherent_atom_size: usize) -> usize {
+    ((n + non_coherent_atom_size - 1) / non_coherent_atom_size) * non_coherent_atom_size
+}
+
+fn mem_type_for_buffer(
+    memory_types: &Vec<hal::adapter::MemoryType>,
+    buffer_req: &m::Requirements,
+    properties: m::Properties,
+) -> Option<hal::MemoryTypeId> {
+    let t = memory_types.iter().enumerate().position(|(id, mem_type)| {
+        buffer_req.type_mask & (1 << id) != 0 && mem_type.properties.contains(properties)
+    })?;
+    Some(t.into())
 }
 
 impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
@@ -974,33 +1010,5 @@ impl<B: hal::Backend> Renderer<B> {
             inner.next_fif_index = 0;
         }
         Ok(())
-    }
-}
-
-impl<B: hal::Backend> Drop for Renderer<B> {
-    fn drop(&mut self) {
-        self.device.wait_idle().unwrap();
-        unsafe {
-            let mut inner = ManuallyDrop::take(&mut self.inner);
-            self.device.destroy_descriptor_pool(inner.desc_pool);
-            self.device.destroy_descriptor_set_layout(inner.set_layout);
-            self.device.device_destroy(inner.vertex_buffer_bundles);
-            for tex_image_bundle in inner.tex_arena.into_iter() {
-                self.device.device_destroy(tex_image_bundle);
-            }
-            self.device.destroy_sampler(inner.sampler);
-            for PerFif { semaphore, fence, cmd_buffer, depth_image_bundle } in inner.per_fif {
-                self.device.destroy_semaphore(semaphore);
-                self.device.destroy_fence(fence);
-                self.inner.cmd_pool.free(iter::once(cmd_buffer));
-                self.device.device_destroy(depth_image_bundle);
-            }
-            self.device.destroy_command_pool(inner.cmd_pool);
-            self.device.destroy_render_pass(inner.render_pass);
-            inner.surface.unconfigure_swapchain(&self.device);
-            self.device.destroy_graphics_pipeline(inner.pipeline);
-            self.device.destroy_pipeline_layout(inner.pipeline_layout);
-            inner.instance.destroy_surface(inner.surface);
-        }
     }
 }
