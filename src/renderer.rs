@@ -20,45 +20,14 @@ use {
         ops::Range,
     },
 };
-pub mod vert_coord_consts {
-    use super::VertCoord;
-    const N: f32 = -0.5; // consider changing s.t. up is +y for later (more standard)
-    const P: f32 = 0.5;
-    const TL: VertCoord = VertCoord { model_coord: [N, N, 0.], tex_coord: [0., 0.] };
-    const TR: VertCoord = VertCoord { model_coord: [P, N, 0.], tex_coord: [1., 0.] };
-    const BR: VertCoord = VertCoord { model_coord: [P, P, 0.], tex_coord: [1., 1.] };
-    const BL: VertCoord = VertCoord { model_coord: [N, P, 0.], tex_coord: [0., 1.] };
-    pub const UNIT_QUAD: [VertCoord; 6] = [BR, TR, TL, TL, BL, BR];
-}
 
 ////////////////////////////////////////////////////////
 // # Type definitions
-
-#[derive(Debug, Clone)]
-pub struct DrawInfo<'a> {
-    pub view_transform: &'a Mat4,
-    pub vertex_range: Range<u32>,
-    pub instance_range: Range<u32>,
-}
 
 #[derive(Debug, Copy, Clone)]
 pub enum RenderErr {
     UnknownTextureIndex,
 }
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct VertCoord {
-    pub tex_coord: [f32; 2],
-    pub model_coord: [f32; 3],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct TexScissor {
-    pub top_left: [f32; 2],
-    pub size: [f32; 2],
-}
-
 #[derive(Debug)]
 struct PerFif<B: hal::Backend> {
     cmd_buffer: B::CommandBuffer,
@@ -223,12 +192,11 @@ impl<B: hal::Backend> Drop for Renderer<B> {
 ////////////////////////////////////////////////////////
 // # Functions and methods
 
-impl<'a> DrawInfo<'a> {
-    pub fn new(
-        view_transform: &'a Mat4,
-        vertex_range: Range<u32>,
-        instance_range: Range<u32>,
-    ) -> Self {
+fn cap_u32_range(range: &Range<u32>, cap: u32) -> Range<u32> {
+    range.start..(range.end.min(cap))
+}
+impl DrawInfo {
+    pub fn new(view_transform: Mat4, vertex_range: Range<u32>, instance_range: Range<u32>) -> Self {
         Self { view_transform, vertex_range, instance_range }
     }
 }
@@ -736,6 +704,8 @@ impl<B: hal::Backend> Renderer<B> {
         unsafe { self.device.wait_for_fence(&per_fif.fence, !0).expect("Can't wait for fence") };
     }
 
+    // TODO add something that writes instance buffers using one (TexScissor, Mat4) iterator
+
     pub fn write_vertex_buffer<T>(
         &mut self,
         start: usize,
@@ -919,7 +889,7 @@ impl<B: hal::Backend> Renderer<B> {
     pub fn render_instances<'a>(
         &mut self,
         texture_index: usize,
-        draw_info_iter: impl IntoIterator<Item = DrawInfo<'a>>,
+        draw_info_iter: impl IntoIterator<Item = &'a DrawInfo>,
     ) -> Result<(), RenderErr> {
         let inner = &mut *self.inner;
         let tex_image_bundle: &ImageBundle<B> =
@@ -998,17 +968,17 @@ impl<B: hal::Backend> Renderer<B> {
                 ],
                 command::SubpassContents::Inline,
             );
-            for DrawInfo { view_transform, mut vertex_range, mut instance_range } in draw_info_iter
-            {
-                vertex_range.end = vertex_range.end.min(self.max_buffer_args.max_tri_verts);
-                instance_range.end = instance_range.end.min(self.max_buffer_args.max_instances);
+            for DrawInfo { view_transform, vertex_range, instance_range } in draw_info_iter {
                 per_fif.cmd_buffer.push_graphics_constants(
                     &inner.pipeline_layout,
                     ShaderStageFlags::VERTEX,
                     0,
                     view_transform.as_u32_slice(),
                 );
-                per_fif.cmd_buffer.draw(vertex_range, instance_range);
+                per_fif.cmd_buffer.draw(
+                    cap_u32_range(vertex_range, self.max_buffer_args.max_tri_verts),
+                    cap_u32_range(instance_range, self.max_buffer_args.max_instances),
+                );
             }
             per_fif.cmd_buffer.end_render_pass();
             per_fif.cmd_buffer.finish();

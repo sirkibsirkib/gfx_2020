@@ -2,17 +2,58 @@ mod renderer;
 mod simple_arena;
 
 use {
+    core::ops::Range,
     gfx_hal::{self as hal, prelude::*, pso::Face, window::Extent2D},
-    std::time::{Duration, Instant},
+    std::{
+        path::Path,
+        time::{Duration, Instant},
+    },
 };
 pub use {
+    gfx_hal,
     glam::{Mat4, Quat, Vec3},
     image,
-    renderer::{vert_coord_consts, DrawInfo, Renderer, TexScissor, VertCoord},
+    renderer::Renderer,
     winit,
 };
+pub mod vert_coord_consts {
+    use super::VertCoord;
+    const N: f32 = -0.5; // consider changing s.t. up is +y for later (more standard)
+    const P: f32 = 0.5;
+    const TL: VertCoord = VertCoord { model_coord: [N, N, 0.], tex_coord: [0., 0.] };
+    const TR: VertCoord = VertCoord { model_coord: [P, N, 0.], tex_coord: [1., 0.] };
+    const BR: VertCoord = VertCoord { model_coord: [P, P, 0.], tex_coord: [1., 1.] };
+    const BL: VertCoord = VertCoord { model_coord: [N, P, 0.], tex_coord: [0., 1.] };
+    pub const UNIT_QUAD: [VertCoord; 6] = [BR, TR, TL, TL, BL, BR];
+}
 ///////////////////////////////////
+
+#[derive(Debug, Copy, Clone)]
+pub struct HaltLoop;
+
 pub type TexId = usize;
+pub type ProceedWith<T> = Result<T, HaltLoop>;
+pub type Proceed = ProceedWith<()>;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct VertCoord {
+    pub tex_coord: [f32; 2],
+    pub model_coord: [f32; 3],
+}
+#[derive(Debug, Clone)]
+pub struct DrawInfo {
+    pub view_transform: Mat4,
+    pub vertex_range: Range<u32>,
+    pub instance_range: Range<u32>,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TexScissor {
+    pub top_left: [f32; 2],
+    pub size: [f32; 2],
+}
 
 #[derive(Debug, Clone)]
 pub struct RendererConfig<'a> {
@@ -28,34 +69,47 @@ pub struct RendererInitConfig<'a> {
 }
 #[derive(Debug, Clone)]
 pub struct MaxBufferArgs {
-    pub max_instances: u32,
     pub max_tri_verts: u32,
+    pub max_instances: u32,
 }
 
 #[allow(unused_variables)]
-pub trait UserSide<B: hal::Backend> {
-    fn init(&mut self, renderer: &mut Renderer<B>) -> Result<(), ()>;
-    fn handle_event(
+pub trait DrivesMainLoop {
+    fn handle_event<B: hal::Backend>(
         &mut self,
         renderer: &mut Renderer<B>,
         event: winit::event::Event<()>,
-    ) -> Result<(), ()> {
+    ) -> Proceed {
+        use winit::event::{
+            Event as Ev, KeyboardInput as Ki, VirtualKeyCode as Vkc, WindowEvent as We,
+        };
+        match event {
+            Ev::WindowEvent { event: We::CloseRequested, .. }
+            | Ev::WindowEvent {
+                event:
+                    We::KeyboardInput { input: Ki { virtual_keycode: Some(Vkc::Escape), .. }, .. },
+                ..
+            } => Err(HaltLoop),
+            _ => Ok(()),
+        }
+    }
+
+    fn update<B: hal::Backend>(&mut self, renderer: &mut Renderer<B>) -> Proceed {
         Ok(())
     }
-    fn update(&mut self, renderer: &mut Renderer<B>) -> Result<(), ()> {
-        Ok(())
-    }
-    fn render(&mut self, renderer: &mut Renderer<B>) -> Result<&[DrawInfo], ()> {
-        Ok(&[])
-    }
+
+    fn render<B: hal::Backend>(
+        &mut self,
+        renderer: &mut Renderer<B>,
+    ) -> ProceedWith<(TexId, &[DrawInfo])>;
 }
 
-//////////////////////////////////////////////
-
-pub fn main_loop<B: hal::Backend, U: UserSide<B>>(
-    user_side: &'static mut U,
-    config: &RendererConfig,
-) -> Result<(), ()> {
+pub fn main_loop<B, D, I>(config: &RendererConfig, state_init: I)
+where
+    B: hal::Backend,
+    D: DrivesMainLoop + 'static,
+    I: FnOnce(&mut Renderer<B>) -> ProceedWith<&'static mut D>,
+{
     let event_loop = winit::event_loop::EventLoop::new();
     let wb = winit::window::WindowBuilder::new()
         .with_resizable(false)
@@ -70,7 +124,10 @@ pub fn main_loop<B: hal::Backend, U: UserSide<B>>(
     let surface = unsafe { instance.create_surface(&window).unwrap() };
     let adapter = instance.enumerate_adapters().into_iter().next().unwrap();
     let mut renderer = Renderer::<B>::new(instance, surface, adapter, &config);
-    user_side.init(&mut renderer)?;
+    let state = match state_init(&mut renderer) {
+        Ok(state) => state,
+        Err(HaltLoop) => return,
+    };
     let mut next_update_after = Instant::now();
     event_loop.run(move |event, _, control_flow| {
         use winit::{
@@ -84,7 +141,7 @@ pub fn main_loop<B: hal::Backend, U: UserSide<B>>(
                 let now = Instant::now();
                 while next_update_after < now {
                     next_update_after += renderer.update_delta;
-                    if let Err(()) = user_side.update(&mut renderer) {
+                    if let Err(HaltLoop) = state.update(&mut renderer) {
                         *control_flow = ControlFlow::Exit;
                         return;
                     }
@@ -92,22 +149,56 @@ pub fn main_loop<B: hal::Backend, U: UserSide<B>>(
                 window.request_redraw();
             }
             E::RedrawEventsCleared => {
-                match user_side.render(&mut renderer) {
-                    Ok(draw_info_slice) => {
-                        renderer.render_instances(0, draw_info_slice.iter().cloned()).unwrap()
+                match state.render(&mut renderer) {
+                    Ok((tex_id, draw_info_slice)) => {
+                        renderer.render_instances(tex_id, draw_info_slice.iter()).unwrap()
                     }
-                    Err(()) => {
+                    Err(HaltLoop) => {
                         *control_flow = ControlFlow::Exit;
                         return;
                     }
                 };
             }
             event => {
-                if let Err(()) = user_side.handle_event(&mut renderer, event) {
+                if let Err(HaltLoop) = state.handle_event(&mut renderer, event) {
                     *control_flow = ControlFlow::Exit;
                     return;
                 }
             }
         }
     })
+}
+
+//////////////////////////////////////////////
+impl Default for RendererConfig<'_> {
+    fn default() -> Self {
+        Self {
+            init: Default::default(),
+            max_buffer_args: Default::default(),
+            init_update_delta: Duration::from_millis(16),
+        }
+    }
+}
+impl Default for MaxBufferArgs {
+    fn default() -> Self {
+        Self { max_tri_verts: 256, max_instances: 2048 }
+    }
+}
+impl Default for RendererInitConfig<'_> {
+    fn default() -> Self {
+        Self {
+            window_dims: Extent2D { width: 600, height: 600 },
+            window_title: "My program using gfx_2020",
+            cull_face: Face::BACK,
+        }
+    }
+}
+pub fn load_texture_from_path(
+    path: impl AsRef<Path>,
+) -> Result<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>, String> {
+    Ok(image::io::Reader::open(path)
+        .map_err(|e| format!("{}", e))?
+        .decode()
+        .map_err(|e| format!("{}", e))?
+        .to_rgba8())
 }

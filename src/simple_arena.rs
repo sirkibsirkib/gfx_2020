@@ -19,7 +19,7 @@ impl<T> SimpleArena<T> {
             i
         } else {
             self.slots.push(Some(t));
-            self.slots.len()
+            self.slots.len() - 1
         }
     }
 
