@@ -37,7 +37,6 @@ pub mod vert_coord_consts {
 #[derive(Debug, Clone)]
 pub struct DrawInfo<'a> {
     pub view_transform: &'a Mat4,
-    // pub color_mult: Vec4,
     pub vertex_range: Range<u32>,
     pub instance_range: Range<u32>,
 }
@@ -99,8 +98,9 @@ pub struct Renderer<B: hal::Backend> {
     viewport: pso::Viewport,
     desc_set: B::DescriptorSet,
     inner: ManuallyDrop<RendererInner<B>>,
-    max_instances: u32,
-    max_tri_verts: u32,
+    pub update_delta: Duration,
+    window_dims: Extent2D,
+    max_buffer_args: MaxBufferArgs,
 }
 /// Things that must be manually dropped, because they correspond to Gfx resources
 #[derive(debug_stub_derive::DebugStub)]
@@ -140,7 +140,7 @@ trait DeviceDestroy<T> {
 
 impl<B: hal::Backend> HasVertexBufferFor<B, VertCoord> for Renderer<B> {
     fn get_vertex_buffer_cap(&self) -> u32 {
-        self.max_tri_verts
+        self.max_buffer_args.max_tri_verts
     }
     fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<VertCoord, B> {
         &self.inner.vertex_buffer_bundles.vc
@@ -148,7 +148,7 @@ impl<B: hal::Backend> HasVertexBufferFor<B, VertCoord> for Renderer<B> {
 }
 impl<B: hal::Backend> HasVertexBufferFor<B, Mat4> for Renderer<B> {
     fn get_vertex_buffer_cap(&self) -> u32 {
-        self.max_instances
+        self.max_buffer_args.max_instances
     }
     fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<Mat4, B> {
         &self.inner.vertex_buffer_bundles.m4
@@ -156,7 +156,7 @@ impl<B: hal::Backend> HasVertexBufferFor<B, Mat4> for Renderer<B> {
 }
 impl<B: hal::Backend> HasVertexBufferFor<B, TexScissor> for Renderer<B> {
     fn get_vertex_buffer_cap(&self) -> u32 {
-        self.max_instances
+        self.max_buffer_args.max_instances
     }
     fn get_vertex_buffer_bundle(&self) -> &VertexBufferBundle<TexScissor, B> {
         &self.inner.vertex_buffer_bundles.ts
@@ -327,9 +327,7 @@ impl<B: hal::Backend> Renderer<B> {
         instance: B::Instance,
         mut surface: B::Surface,
         adapter: hal::adapter::Adapter<B>,
-        max_tri_verts: u32,
-        max_instances: u32,
-        cull_face: pso::Face,
+        config: &RendererConfig,
     ) -> Self {
         let memory_types = adapter.physical_device.memory_properties().memory_types;
         let limits = adapter.physical_device.limits();
@@ -408,9 +406,24 @@ impl<B: hal::Backend> Renderer<B> {
         ///////////////////////////////////////////////////////
         // ALLOCATE AND INIT VERTEX BUFFER
         let vertex_buffer_bundles = VertexBufferBundles {
-            vc: VertexBufferBundle::new(&device, &limits, &memory_types, max_tri_verts),
-            m4: VertexBufferBundle::new(&device, &limits, &memory_types, max_instances),
-            ts: VertexBufferBundle::new(&device, &limits, &memory_types, max_instances),
+            vc: VertexBufferBundle::new(
+                &device,
+                &limits,
+                &memory_types,
+                config.max_buffer_args.max_tri_verts,
+            ),
+            m4: VertexBufferBundle::new(
+                &device,
+                &limits,
+                &memory_types,
+                config.max_buffer_args.max_instances,
+            ),
+            ts: VertexBufferBundle::new(
+                &device,
+                &limits,
+                &memory_types,
+                config.max_buffer_args.max_instances,
+            ),
         };
 
         let formats = surface.supported_formats(&adapter.physical_device);
@@ -423,7 +436,8 @@ impl<B: hal::Backend> Renderer<B> {
         });
 
         let caps = surface.capabilities(&adapter.physical_device);
-        let mut swap_config = hal::window::SwapchainConfig::from_caps(&caps, format, DIMS);
+        let mut swap_config =
+            hal::window::SwapchainConfig::from_caps(&caps, format, config.init.window_dims);
         let frames_in_flight = {
             use hal::window::PresentMode as Pm;
             match swap_config.present_mode {
@@ -610,7 +624,7 @@ impl<B: hal::Backend> Renderer<B> {
                     &pipeline_layout,
                     Subpass { index: 0, main_pass: &render_pass },
                 );
-                pipeline_desc.rasterizer.cull_face = cull_face;
+                pipeline_desc.rasterizer.cull_face = config.init.cull_face;
                 pipeline_desc.depth_stencil = pso::DepthStencilDesc {
                     depth: Some(pso::DepthTest { fun: pso::Comparison::LessEqual, write: true }),
                     depth_bounds: false,
@@ -688,8 +702,9 @@ impl<B: hal::Backend> Renderer<B> {
         };
         let per_fif = iter::repeat_with(new_per_fif).take(frames_in_flight).collect();
         Renderer {
-            max_instances,
-            max_tri_verts,
+            window_dims: config.init.window_dims,
+            max_buffer_args: config.max_buffer_args.clone(),
+            update_delta: config.init_update_delta,
             device,
             queue_group,
             adapter,
@@ -923,7 +938,11 @@ impl<B: hal::Backend> Renderer<B> {
                 .create_framebuffer(
                     &inner.render_pass,
                     views.iter().copied(),
-                    i::Extent { width: DIMS.width, height: DIMS.height, depth: 1 },
+                    i::Extent {
+                        width: self.window_dims.width,
+                        height: self.window_dims.height,
+                        depth: 1,
+                    },
                 )
                 .unwrap()
         };
@@ -981,8 +1000,8 @@ impl<B: hal::Backend> Renderer<B> {
             );
             for DrawInfo { view_transform, mut vertex_range, mut instance_range } in draw_info_iter
             {
-                vertex_range.end = vertex_range.end.min(self.max_tri_verts);
-                instance_range.end = instance_range.end.min(self.max_instances);
+                vertex_range.end = vertex_range.end.min(self.max_buffer_args.max_tri_verts);
+                instance_range.end = instance_range.end.min(self.max_buffer_args.max_instances);
                 per_fif.cmd_buffer.push_graphics_constants(
                     &inner.pipeline_layout,
                     ShaderStageFlags::VERTEX,

@@ -1,34 +1,3 @@
-mod renderer;
-mod simple_arena;
-const DIMS: hal::window::Extent2D = hal::window::Extent2D { width: 800, height: 800 };
-
-use std::time::{Duration, Instant};
-use {
-    core::f32::consts::PI,
-    gfx_backend_dx12 as back,
-    gfx_hal::{self as hal, prelude::*},
-    rand::{rngs::ThreadRng, Rng},
-};
-pub use {
-    gfx_hal::pso::Face as CullFace,
-    glam::{Mat4, Quat, Vec3},
-    image,
-    renderer::{vert_coord_consts, DrawInfo, Renderer, TexScissor, VertCoord},
-    winit,
-};
-
-trait UserSide {
-    fn init(&mut self);
-    fn handle(&mut self, event: winit::event::WindowEvent);
-    fn render(&mut self);
-    fn update(&mut self);
-}
-
-struct Ctx<B: hal::Backend> {
-    pub update_delta: f32, // seconds
-    renderer: Renderer<B>,
-}
-
 fn rand_quat<R: Rng>(rng: &mut R) -> Quat {
     let mut sample_fn = move || rng.gen::<f32>() * PI * 2.;
     Quat::from_rotation_x(sample_fn())
