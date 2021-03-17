@@ -11,19 +11,23 @@ use {
 };
 pub use {
     gfx_hal,
-    glam::{Mat4, Quat, Vec3},
+    glam::{Mat4, Quat, Vec2, Vec3},
     image,
     renderer::Renderer,
     winit,
 };
 pub mod vert_coord_consts {
-    use super::VertCoord;
+    use super::{Vec2, Vec3, VertCoord};
     const N: f32 = -0.5; // consider changing s.t. up is +y for later (more standard)
     const P: f32 = 0.5;
-    const TL: VertCoord = VertCoord { model_coord: [N, N, 0.], tex_coord: [0., 0.] };
-    const TR: VertCoord = VertCoord { model_coord: [P, N, 0.], tex_coord: [1., 0.] };
-    const BR: VertCoord = VertCoord { model_coord: [P, P, 0.], tex_coord: [1., 1.] };
-    const BL: VertCoord = VertCoord { model_coord: [N, P, 0.], tex_coord: [0., 1.] };
+    const TL: VertCoord =
+        VertCoord { model_coord: Vec3 { x: N, y: N, z: 0. }, tex_coord: Vec2 { x: 0., y: 0. } };
+    const TR: VertCoord =
+        VertCoord { model_coord: Vec3 { x: P, y: N, z: 0. }, tex_coord: Vec2 { x: 1., y: 0. } };
+    const BR: VertCoord =
+        VertCoord { model_coord: Vec3 { x: P, y: P, z: 0. }, tex_coord: Vec2 { x: 1., y: 1. } };
+    const BL: VertCoord =
+        VertCoord { model_coord: Vec3 { x: N, y: P, z: 0. }, tex_coord: Vec2 { x: 0., y: 1. } };
     pub const UNIT_QUAD: [VertCoord; 6] = [BR, TR, TL, TL, BL, BR];
 }
 ///////////////////////////////////
@@ -38,8 +42,8 @@ pub type Proceed = ProceedWith<()>;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VertCoord {
-    pub tex_coord: [f32; 2],
-    pub model_coord: [f32; 3],
+    pub tex_coord: Vec2,
+    pub model_coord: Vec3,
 }
 #[derive(Debug, Clone)]
 pub struct DrawInfo {
@@ -51,8 +55,8 @@ pub struct DrawInfo {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TexScissor {
-    pub top_left: [f32; 2],
-    pub size: [f32; 2],
+    pub top_left: Vec2,
+    pub size: Vec2,
 }
 
 #[derive(Debug, Clone)]

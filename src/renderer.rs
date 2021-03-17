@@ -141,24 +141,19 @@ impl AsU32Slice for Mat4 {
 impl core::ops::Mul<Self> for TexScissor {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
-        use glam::Vec2;
-        let size = *(Vec2::from(self.size) * Vec2::from(rhs.size)).as_ref();
+        let size = self.size * rhs.size;
         Self { top_left: self * rhs.top_left, size }
     }
 }
-impl core::ops::Mul<[f32; 2]> for TexScissor {
-    type Output = [f32; 2];
-    fn mul(self, rhs: [f32; 2]) -> [f32; 2] {
-        use glam::Vec2;
-        let tl = Vec2::from(self.top_left);
-        let sz = Vec2::from(self.size);
-        let pt = Vec2::from(rhs);
-        *(tl + sz * pt).as_ref()
+impl core::ops::Mul<Vec2> for TexScissor {
+    type Output = Vec2;
+    fn mul(self, rhs: Vec2) -> Vec2 {
+        self.top_left + self.size * rhs
     }
 }
 impl Default for TexScissor {
     fn default() -> Self {
-        Self { top_left: [0.; 2], size: [1.; 2] }
+        Self { top_left: Vec2 { x: 0., y: 0. }, size: Vec2 { x: 1., y: 1. } }
     }
 }
 impl<B: hal::Backend> Drop for Renderer<B> {
@@ -267,12 +262,12 @@ impl<T: Copy, B: hal::Backend> VertexBufferBundle<T, B> {
     unsafe fn write_buffer(
         &self,
         device: &B::Device,
-        start_offset: usize,
+        start_offset: u32,
         bounds_checked_iter: impl Iterator<Item = T>,
-    ) -> usize {
-        let mut count_written = 0;
+    ) -> u32 {
+        let mut count_written: u32 = 0;
         for data in bounds_checked_iter {
-            let dest = self.mapping_ptr.add(start_offset + count_written);
+            let dest = self.mapping_ptr.add((start_offset + count_written) as usize);
             dest.write(data);
             count_written += 1;
         }
@@ -706,18 +701,14 @@ impl<B: hal::Backend> Renderer<B> {
 
     // TODO add something that writes instance buffers using one (TexScissor, Mat4) iterator
 
-    pub fn write_vertex_buffer<T>(
-        &mut self,
-        start: usize,
-        data: impl IntoIterator<Item = T>,
-    ) -> usize
+    pub fn write_vertex_buffer<T>(&mut self, start: u32, data: impl IntoIterator<Item = T>) -> u32
     where
         Self: HasVertexBufferFor<B, T>,
         T: Copy,
     {
         let cap = HasVertexBufferFor::<B, T>::get_vertex_buffer_cap(self) as usize;
         // println!("size {:?} has cap {:?}", mem::size_of::<T>(), cap);
-        if let Some(max_size) = (cap).checked_sub(start) {
+        if let Some(max_size) = (cap).checked_sub(start as usize) {
             self.await_prev_fence();
             unsafe {
                 self.get_vertex_buffer_bundle().write_buffer(
