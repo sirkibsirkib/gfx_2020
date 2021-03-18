@@ -11,7 +11,7 @@ use {
 };
 pub use {
     gfx_hal,
-    glam::{Mat4, Quat, Vec2, Vec3},
+    glam::{self, Mat4, Quat, Vec2, Vec3},
     image,
     renderer::Renderer,
     winit,
