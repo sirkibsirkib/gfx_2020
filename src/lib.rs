@@ -10,7 +10,7 @@ use {
     },
 };
 pub use {
-    gfx_hal,
+    gfx_hal::{self, command::ClearColor},
     glam::{self, Mat4, Quat, Vec2, Vec3},
     image,
     renderer::Renderer,
@@ -105,7 +105,7 @@ pub trait DrivesMainLoop {
     fn render<B: hal::Backend>(
         &mut self,
         renderer: &mut Renderer<B>,
-    ) -> ProceedWith<(TexId, &[DrawInfo])>;
+    ) -> ProceedWith<(TexId, ClearColor, &[DrawInfo])>;
 }
 
 pub fn main_loop<B, D, I>(config: &RendererConfig, state_init: I)
@@ -154,9 +154,9 @@ where
             }
             E::RedrawEventsCleared => {
                 match state.render(&mut renderer) {
-                    Ok((tex_id, draw_info_slice)) => {
-                        renderer.render_instances(tex_id, draw_info_slice.iter()).unwrap()
-                    }
+                    Ok((tex_id, clear_color, draw_info_slice)) => renderer
+                        .render_instances(tex_id, clear_color, draw_info_slice.iter())
+                        .unwrap(),
                     Err(HaltLoop) => {
                         *control_flow = ControlFlow::Exit;
                         return;

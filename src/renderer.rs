@@ -880,6 +880,7 @@ impl<B: hal::Backend> Renderer<B> {
     pub fn render_instances<'a>(
         &mut self,
         texture_index: usize,
+        clear_color: command::ClearColor,
         draw_info_iter: impl IntoIterator<Item = &'a DrawInfo>,
     ) -> Result<(), RenderErr> {
         let inner = &mut *self.inner;
@@ -950,9 +951,7 @@ impl<B: hal::Backend> Renderer<B> {
                 &framebuffer,
                 self.viewport.rect,
                 &[
-                    command::ClearValue {
-                        color: command::ClearColor { float32: [0., 0., 0., 1.] },
-                    },
+                    command::ClearValue { color: clear_color },
                     command::ClearValue {
                         depth_stencil: command::ClearDepthStencil { depth: 1., stencil: 0 },
                     },
