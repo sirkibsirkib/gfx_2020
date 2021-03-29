@@ -206,3 +206,14 @@ pub fn load_texture_from_path(
         .map_err(|e| format!("{}", e))?
         .to_rgba8())
 }
+
+pub fn load_texture_from_bytes(
+    bytes: &[u8],
+) -> Result<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>, String> {
+    Ok(image::io::Reader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("{}", e))?
+        .decode()
+        .map_err(|e| format!("{}", e))?
+        .to_rgba8())
+}
